@@ -78,3 +78,18 @@ def test_copies_from_a_relation_that_no_longer_exists_are_redone():
     orphan = merge_inferred({}, MEASURED, 999, NOW)
     result = plan([(1, orphan), (2, orphan)])
     assert result["candidates"] == [1, 2]
+
+
+def test_provider_episode_count_reads_both_shapes():
+    from plan import provider_episode_count
+
+    assert provider_episode_count({"episodes": {"1": [1, 2, 3], "2": [1, 2]}}) == 5
+    assert provider_episode_count({"episodes": [[1, 2], [3]]}) == 3
+    assert provider_episode_count({}) == 0 and provider_episode_count(None) == 0
+
+
+def test_short_versions_are_those_below_a_sibling_and_above_zero():
+    from plan import short_versions
+
+    counts = {1: [(10, 32), (11, 16)], 2: [(20, 8), (21, 8)], 3: [(30, 12), (31, 0)], 4: [(40, 5)]}
+    assert short_versions(counts) == [11]

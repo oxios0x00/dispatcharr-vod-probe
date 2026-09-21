@@ -40,7 +40,7 @@ For every probed relation, `quality` and `resolution` are set, using the vocabul
       ],
       "duration_secs": 6776.0,
       "container": "matroska,webm",
-      "source": { "plugin": "vod-probe", "version": "0.7.2" }
+      "source": { "plugin": "vod-probe", "version": "0.8.0" }
     }
   }
 }
@@ -98,7 +98,7 @@ Each series relation also gets a small summary in its own `custom_properties.pro
 Only relations without a current `probe` block are due, so the first run is a long one and the following ones only pick up what is new:
 
 - **Movies:** no `probe` block, or a block in an older format.
-- **Series versions:** never loaded, no summary yet, the provider's `last_modified` moved (the episode list is then requested again), the number of episodes differs, Dispatcharr reloaded the series since the summary, or a more thorough **Episodes** setting was chosen.
+- **Series versions:** never loaded, loaded with no episode, flagged by **Reload Incomplete Series**, no summary yet, the provider's `last_modified` moved (the episode list is then requested again), the number of episodes differs, Dispatcharr reloaded the series since the summary, or a more thorough **Episodes** setting was chosen.
 - **New episodes** of a series already sampled are copied from the measured episode without any new probe.
 
 The daily run reads series relations only, never their episodes, and opens just the ones that changed.
@@ -153,6 +153,7 @@ Keep **Dry run** on for the first steps.
 | **Run Status** | Progress of the run in flight, or the result of the last one. |
 | **Pause** / **Resume** | Stop a run after the relation in progress and block new ones until resumed. The circuit breaker pauses the same way. |
 | **Retry Errors** | Flags every failed relation (and series version left pending) so the next run tries it again. |
+| **Reload Incomplete Series** | Finds series versions holding fewer episodes than another version of the same series, asks the provider how many it lists, and flags those where it lists more, so the next run asks for their episode list again. Background task; a dry run only reports. See [Incomplete episode lists](#incomplete-episode-lists). |
 | **Scan** | Counts what is due and why. Writes nothing. |
 | **Coverage Stats** | How many relations have an answer, split into measured and inferred, with the tiers found. |
 | **[SCHEDULE] Apply / Remove / Status / Test Fire Now** | Manage the periodic run. |
@@ -174,6 +175,13 @@ Dispatcharr has no scheduling API for plugins, so VOD Probe registers a `django-
 A failed probe is never retried on its own, so a dead link is not probed again every day. Use **Retry Errors** (immediately) or the **Retry errors at the next scheduled run** switch. Retried probes do not count towards the circuit breaker, because they are known failures; a new, real outage still trips it.
 
 A relation whose probe fails keeps its last known `quality` and `resolution`; only `probe.status`, the short error and an attempt counter change.
+
+### Incomplete episode lists
+
+Dispatcharr marks a series' episodes as loaded as soon as the provider answers without an error, even when the answer was empty or partial, and never checks again. An episode Dispatcharr does not hold has no information at all, so two cases are handled:
+
+- **A series loaded with no episode** is asked for again automatically, up to 3 times, then left alone (some series are genuinely empty at the provider).
+- **A version holding fewer episodes than another version of the same series** may have had a truncated load, or the provider may simply have less of it. Only the provider can tell, so **Reload Incomplete Series** asks it (one request per suspicious version) and flags only those where it lists more. A real difference is left alone. Run it when you suspect gaps, then run Probe Run.
 
 ### Dispatcharr can erase what was written on episodes
 
@@ -204,7 +212,7 @@ Each probe is a real stream connection, and each series version costs one metada
 
 ## Status
 
-Version 0.7.2. Tested on a Dispatcharr test instance with a single Xtream Codes provider, on both movies and series, including a full first pass, disabling and re-enabling groups, failed probes and retries. Not tested on a production instance, with several providers, or with a concurrency above 1. The scheduled trigger itself (the timer firing on its own) has not been observed yet; **Test Fire Now** exercises the same code path.
+Version 0.8.0. Tested on a Dispatcharr test instance with a single Xtream Codes provider, on both movies and series, including a full first pass, disabling and re-enabling groups, failed probes and retries. Not tested on a production instance, with several providers, or with a concurrency above 1. The scheduled trigger itself (the timer firing on its own) has not been observed yet; **Test Fire Now** exercises the same code path.
 
 ## Development
 

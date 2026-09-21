@@ -15,13 +15,15 @@ except ImportError:  # imported as a top-level module by the unit tests
     from probe import PROBE_SCHEMA_VERSION, _AD_TITLE_HINTS
 
 PLUGIN_SOURCE = "vod-probe"
-PLUGIN_VERSION = "0.7.2"
+PLUGIN_VERSION = "0.8.0"
 
 STATUS_OK = "ok"
 STATUS_ERROR = "error"
 STATUS_UNREACHABLE = "unreachable"
 STATUS_INFERRED = "inferred"
 RELOAD_TOLERANCE = timedelta(seconds=2)
+# How many times a series loaded with no episode is asked for again before it is left alone.
+MAX_EMPTY_RELOADS = 3
 
 # probe.tier -> the vocabulary Dispatcharr's own quality_info uses, so any
 # client that already reads quality_info needs no change.
@@ -290,20 +292,41 @@ def series_marker(existing, last_modified, episodes, seasons, mode, sampled_from
 _MODE_RANK = {"first_of_series": 0, "first_of_season": 1, "all": 2}
 
 
+def flag_reload(custom_properties, now):
+    """custom_properties of a series relation marked so that the next run asks
+    the provider for its episode list again (its list looks incomplete)."""
+    merged = dict(custom_properties or {})
+    marker = merged.get("probe")
+    if isinstance(marker, dict):
+        merged["probe"] = {**marker, "reload": True}
+    else:
+        merged["probe"] = {"schema_version": PROBE_SCHEMA_VERSION, "status": "pending", "reload": True, "probed_at": _iso(now)}
+    return merged
+
+
 def series_work(custom_properties, episode_count, mode, last_episode_refresh=None):
     """What a series relation needs, from its own properties and the number of
     episodes Dispatcharr holds for it: None, or {"reason": ..., "reload": bool}.
     Reload means asking the provider for the episode list again: the series has
-    never been loaded, or the provider's last_modified moved since we last
-    looked. A series whose episodes Dispatcharr reloaded after our summary
-    (last_episode_refresh is newer) is reprocessed too: a reload, which the UI
-    triggers when a series is opened after 24 hours, replaces the whole
-    custom_properties of every episode relation and so erases what we wrote."""
+    never been loaded, it was loaded with no episode (Dispatcharr marks a load
+    as done even when the answer was empty), Reload Incomplete Series flagged
+    it, or the provider's last_modified moved since we last looked. A series
+    whose episodes Dispatcharr reloaded after our summary (last_episode_refresh
+    is newer) is reprocessed too: a reload, which the UI triggers when a series
+    is opened after 24 hours, replaces the whole custom_properties of every
+    episode relation and so erases what we wrote."""
     properties = custom_properties or {}
     if not properties.get("episodes_fetched"):
         return {"reason": "load", "reload": True}
-    marker = properties.get("probe")
-    if not isinstance(marker, dict) or marker.get("schema_version") != PROBE_SCHEMA_VERSION:
+    marker = properties.get("probe") if isinstance(properties.get("probe"), dict) else None
+    if marker and marker.get("reload"):
+        return {"reason": "incomplete", "reload": True}
+    if marker and marker.get("status") not in (None, STATUS_OK) and marker.get("retry"):
+        return {"reason": "retry", "reload": episode_count == 0}
+    if episode_count == 0:
+        attempts = int(marker.get("attempts") or 0) if marker else 0
+        return {"reason": "empty", "reload": True} if attempts < MAX_EMPTY_RELOADS else None
+    if marker is None or marker.get("schema_version") != PROBE_SCHEMA_VERSION:
         return {"reason": "unmarked", "reload": False}
     summarised_at = _parse_iso(marker.get("probed_at"))
     # The summary's time is truncated to the second and written just after our own
@@ -314,7 +337,7 @@ def series_work(custom_properties, episode_count, mode, last_episode_refresh=Non
     if str(current) != str(marker.get("last_modified")) and not (current is None and marker.get("last_modified") is None):
         return {"reason": "changed", "reload": True}
     if marker.get("status") != STATUS_OK:
-        return {"reason": "retry", "reload": False} if marker.get("retry") else None
+        return None
     if _MODE_RANK.get(mode, 0) > _MODE_RANK.get(marker.get("mode"), 0):
         return {"reason": "mode", "reload": False}  # a more thorough mode than the one it was done with
     if episode_count != marker.get("episodes"):

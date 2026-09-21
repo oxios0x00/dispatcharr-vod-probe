@@ -198,3 +198,39 @@ def test_a_more_thorough_mode_redoes_a_series_a_lighter_one_does_not():
     assert series_work(done, 20, "all") == {"reason": "mode", "reload": False}
     light = series_marker(fresh, 5, 20, 2, "first_of_series", 99, NOW)
     assert series_work(light, 20, "first_of_season") == {"reason": "mode", "reload": False}
+
+
+def test_a_series_loaded_with_no_episode_is_asked_for_again_a_few_times():
+    from contract import MAX_EMPTY_RELOADS, series_marker, series_work
+
+    fetched = {"episodes_fetched": True, "basic_data": {"last_modified": "5"}}
+    assert series_work(fetched, 0, "first_of_series") == {"reason": "empty", "reload": True}
+    marker = fetched
+    for attempt in range(MAX_EMPTY_RELOADS):
+        assert series_work(marker, 0, "first_of_series") == {"reason": "empty", "reload": True}
+        marker = series_marker(marker, 5, 0, 0, "first_of_series", None, NOW)
+        assert marker["probe"]["attempts"] == attempt + 1
+    assert series_work(marker, 0, "first_of_series") is None  # left alone
+
+
+def test_retry_errors_reloads_a_series_with_no_episode_but_not_one_that_has_some():
+    from contract import flag_retry, series_marker, series_work
+
+    fetched = {"episodes_fetched": True, "basic_data": {"last_modified": "5"}}
+    empty = flag_retry(series_marker(series_marker(series_marker(fetched, 5, 0, 0, "first_of_series", None, NOW), 5, 0, 0, "first_of_series", None, NOW), 5, 0, 0, "first_of_series", None, NOW))
+    assert series_work(empty, 0, "first_of_series") == {"reason": "retry", "reload": True}
+    pending = flag_retry(series_marker(fetched, 5, 20, 2, "first_of_series", None, NOW))
+    assert series_work(pending, 20, "first_of_series") == {"reason": "retry", "reload": False}
+
+
+def test_flag_reload_makes_the_next_run_ask_the_provider_again():
+    from contract import flag_reload, series_marker, series_work
+
+    fetched = {"episodes_fetched": True, "basic_data": {"last_modified": "5"}}
+    done = series_marker(fetched, 5, 8, 1, "first_of_series", 99, NOW)
+    assert series_work(done, 8, "first_of_series") is None
+    flagged = flag_reload(done, NOW)
+    assert flagged["probe"]["episodes"] == 8 and flagged["probe"]["reload"] is True
+    assert series_work(flagged, 8, "first_of_series") == {"reason": "incomplete", "reload": True}
+    assert series_work(flag_reload(fetched, NOW), 8, "first_of_series") == {"reason": "incomplete", "reload": True}
+    assert "reload" not in series_marker(flagged, 5, 20, 1, "first_of_series", 99, NOW)["probe"]  # a new summary clears it

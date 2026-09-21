@@ -63,7 +63,7 @@ class _RateLimiter:
 
 class Plugin:
     name = "VOD Probe"
-    version = "0.7.2"
+    version = "0.8.0"
     description = (
         "Probes the real quality of each VOD relation with ffprobe and writes it "
         "into the relation's custom_properties, so every tool reading "
@@ -74,7 +74,7 @@ class Plugin:
 
     SCHEDULED_TASK_CELERY_NAME = "vod_probe.run"
     SCHEDULE_TASK_NAME = "vod_probe.auto_run"
-    _BACKGROUND_ACTIONS = {"probe_run"}
+    _BACKGROUND_ACTIONS = {"probe_run", "reload_incomplete"}
     _LOCK = "probe_run"
     # A run renews its lock after every relation; a lock silent this long
     # belongs to a run that died with its worker.
@@ -98,6 +98,8 @@ class Plugin:
                 return self._start_background(action_id, settings)
             if action_id == "probe_run":
                 return self._probe_run(settings, scheduled=bool(context.get("scheduled")))
+            if action_id == "reload_incomplete":
+                return self._reload_incomplete(settings)
             if action_id == "run_status":
                 return self._run_status()
             if action_id == "pause":
@@ -144,9 +146,10 @@ class Plugin:
             )
         except Exception as exc:  # noqa: BLE001 - reported to the user
             return {"status": "error", "message": f"Failed to queue the background run: {exc}"}
+        name = {"probe_run": "Probe Run", "reload_incomplete": "Reload Incomplete Series"}[action_id]
         return {
             "status": "ok",
-            "message": "Probe Run started in the background. Follow it with Run Status, stop it with Pause.",
+            "message": f"{name} started in the background. Follow it with Run Status, stop it with Pause.",
         }
 
     def _busy_message(self, held_since):
@@ -675,7 +678,8 @@ class Plugin:
         reloads = sum(1 for item in due.values() if item["reload"])
         labels = {"load": "never loaded", "unmarked": "no summary yet", "changed": "provider changed it",
                   "count": "episode count differs", "retry": "flagged for retry", "mode": "more thorough setting",
-                  "reloaded": "reloaded by Dispatcharr since"}
+                  "reloaded": "reloaded by Dispatcharr since", "empty": "loaded with no episode",
+                  "incomplete": "provider lists more episodes"}
         detail = ", ".join(f"{labels[k]} {v}" for k, v in reasons.most_common()) or "none"
         return {
             "status": "ok",
@@ -704,6 +708,71 @@ class Plugin:
         result = self._retry_errors()
         logger.info("Retry errors switch: %s", result["message"])
         PluginManager.get().update_settings(key, {**live, "retry_errors_next_schedule": False})
+
+    def _reload_incomplete(self, settings):
+        """Series versions holding fewer episodes than another version of the same
+        series: ask the provider how many it lists, and flag the ones where it
+        lists more, so the next run asks for their episode list again.
+        Dispatcharr marks a load as done even when the provider's answer was
+        partial, and never checks it again. A real difference between versions
+        (the provider simply has less of one) is left alone."""
+        import logging
+
+        from django.db.models import Count
+
+        from .contract import flag_reload
+        from .plan import provider_episode_count, short_versions
+
+        logger = logging.getLogger("vod_probe")
+        acquired, held_since = self.state.try_acquire_lock(self._LOCK, self._LOCK_STALE_SECONDS)
+        if not acquired:
+            return self._busy_message(held_since)
+        try:
+            from core.xtream_codes import Client
+
+            dry_run = bool(settings.get("dry_run", True))
+            series_model = self._series_model()
+            _, episode_model = self._relation_models()[1]
+            held = {
+                row["series_relation_id"]: row["n"]
+                for row in self._active_relations(episode_model).values("series_relation_id").annotate(n=Count("id"))
+            }
+            by_series = {}
+            for rid, series_id, properties in self._active_relations(series_model).values_list("id", "series_id", "custom_properties"):
+                if (properties or {}).get("episodes_fetched"):
+                    by_series.setdefault(series_id, []).append((rid, held.get(rid, 0)))
+            suspects = short_versions(by_series)
+            limiter = _RateLimiter(float(settings.get("max_probes_per_second", 2) or 0))
+            flagged = same = errors = 0
+            for rid in suspects:
+                relation = series_model.objects.select_related("m3u_account").get(id=rid)
+                account = relation.m3u_account
+                limiter.wait()
+                try:
+                    with Client(account.server_url, account.username, account.password, account.get_user_agent_string()) as client:
+                        provider = provider_episode_count(client.get_series_info(relation.external_series_id))
+                except Exception as exc:  # noqa: BLE001 - counted, the others are still checked
+                    errors += 1
+                    logger.warning("Could not ask the provider about series relation %s: %s", rid, type(exc).__name__)
+                    continue
+                if provider > held.get(rid, 0):
+                    flagged += 1
+                    if not dry_run:
+                        self._write(series_model, rid, lambda current: flag_reload(current, datetime.now(timezone.utc)))
+                else:
+                    same += 1
+                self.state.renew_lock(self._LOCK)
+            verb = "would be flagged" if dry_run else "flagged"
+            message = (
+                f"Checked {len(suspects)} series versions holding fewer episodes than another version of the same series: "
+                f"{flagged} {verb} for reload (the provider lists more), {same} match the provider (a real difference), "
+                f"{errors} could not be checked."
+                + ("" if dry_run or not flagged else " The next run asks for their episode list again.")
+            )
+            logger.info("Reload Incomplete Series: %s", message)
+            return {"status": "ok", "message": message}
+        finally:
+            self.state.release_lock(self._LOCK)
 
     def _retry_errors(self):
         """Flag the failed relations so the next run (scheduled or manual) tries

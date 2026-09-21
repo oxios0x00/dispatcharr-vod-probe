@@ -82,3 +82,24 @@ def episodes_to_infer(entries, representative):
     """After a sample succeeded: the other episodes that still lack a block."""
     entries = _detach_foreign_copies(entries)
     return [rid for rid, cp in entries if rid != representative and needs_inference(cp)]
+
+
+def provider_episode_count(series_info):
+    """Number of episodes in an Xtream get_series_info() payload: usually a
+    dict keyed by season, each value a list of episodes; some panels return a
+    plain list of lists."""
+    episodes = (series_info or {}).get("episodes") or {}
+    seasons = episodes.values() if isinstance(episodes, dict) else episodes
+    return sum(len(season) for season in seasons if isinstance(season, list))
+
+
+def short_versions(counts_by_series):
+    """counts_by_series: {series id: [(series relation id, episodes held)]}.
+    The relations holding fewer episodes than another version of the same
+    series, and at least one: those with none are handled on their own. Only
+    the provider can say whether the difference is real."""
+    short = []
+    for versions in counts_by_series.values():
+        most = max((n for _, n in versions), default=0)
+        short += [rid for rid, n in versions if 0 < n < most]
+    return short

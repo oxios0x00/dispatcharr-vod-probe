@@ -1,6 +1,6 @@
 {
   "name": "VOD Probe",
-  "version": "0.7.2",
+  "version": "0.8.0",
   "description": "Probes the real quality of each VOD relation (movies and every episode of every series version) with ffprobe in a background task and writes it into the relation's custom_properties, so every tool reading Dispatcharr's API can use it. Dry run by default.",
   "author": "oxios0x00",
   "license": "MIT",
@@ -132,6 +132,14 @@
       "label": "Retry Errors",
       "description": "A failed probe is never retried on its own. This flags every failed relation (and series version left pending) so the next run, scheduled or manual, tries them again.",
       "button_label": "Retry",
+      "button_variant": "outline",
+      "button_color": "orange"
+    },
+    {
+      "id": "reload_incomplete",
+      "label": "Reload Incomplete Series",
+      "description": "Dispatcharr marks a series' episodes as loaded even when the provider's answer was partial, and never checks again. This finds the series versions holding fewer episodes than another version of the same series, asks the provider how many it lists, and flags those where it lists more: the next run asks for their episode list again. A real difference between versions is left alone. Runs in the background; a dry run only reports.",
+      "button_label": "Check",
       "button_variant": "outline",
       "button_color": "orange"
     },
