@@ -40,13 +40,21 @@ _UNREACHABLE_HINTS = ("timeout", "connection", "unreachable", "404", "403", "ser
 
 
 _URL = re.compile(r"[a-z][a-z0-9+.-]*://\S+?(?=:?(?:\s|$))", re.IGNORECASE)
+# What is left of a URL once its scheme and host are gone (requests reports "with url:
+# /player_api.php?username=...&password=..."): credential parameters, and the
+# /movie|series|live/<user>/<password>/ form of a stream path.
+_CREDENTIAL_PARAM = re.compile(r"\b(username|password|user|pass|token)=[^&\s)\"']*", re.IGNORECASE)
+_STREAM_PATH = re.compile(r"/(movie|series|live)/[^/\s]+/[^/\s]+/", re.IGNORECASE)
 
 
 def scrub_error(text):
-    """ffprobe quotes the stream URL in its errors, and the provider's URL
-    carries the account's username and password. The error ends up in
-    custom_properties, which every API client can read, so URLs are removed."""
-    return _URL.sub("<url>", str(text))
+    """ffprobe and HTTP client errors quote the URL they were given, and the
+    provider's URL carries the account's username and password. The text ends
+    up in custom_properties, in the run state and in notifications, which
+    others can read, so URLs and credentials are removed."""
+    text = _URL.sub("<url>", str(text))
+    text = _CREDENTIAL_PARAM.sub(lambda m: f"{m.group(1)}=<hidden>", text)
+    return _STREAM_PATH.sub(lambda m: f"/{m.group(1)}/<hidden>/<hidden>/", text)
 
 
 def _iso(moment):

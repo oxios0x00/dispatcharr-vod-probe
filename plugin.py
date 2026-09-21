@@ -433,6 +433,7 @@ class Plugin:
 
     def _run_pass(self, settings, logger):
         from .breaker import tripped as breaker_tripped
+        from .contract import scrub_error
 
         limit = int(settings.get("batch_limit", 25) or 0)
         max_concurrent = max(1, int(settings.get("max_concurrent_probes", 1) or 1))
@@ -469,7 +470,7 @@ class Plugin:
                 try:
                     outcome = future.result()
                 except Exception as exc:  # noqa: BLE001 - counted, never fatal for the pass
-                    outcome = _outcome(errors=1, error=f"{type(exc).__name__}: {exc}")
+                    outcome = _outcome(errors=1, error=scrub_error(f"{type(exc).__name__}: {exc}"))
                 progress["processed"] += 1
                 for key in ("errors", "probed", "inferred", "loaded", "retried", "retried_errors"):
                     progress[key] += outcome[key]

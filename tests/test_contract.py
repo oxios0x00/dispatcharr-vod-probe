@@ -258,3 +258,16 @@ def test_a_failed_episode_makes_its_series_visited_again():
     assert series_work(flagged, 40, "all") == {"reason": "retry", "reload": False}
     assert "retry" not in series_marker(flagged, 5, 40, 3, "all", 7, NOW)["probe"]  # visiting the series clears it
     assert flag_series_retry(fetched) == fetched  # no summary: it is processed anyway
+
+
+def test_scrub_error_removes_credentials_even_without_a_scheme():
+    from contract import scrub_error
+
+    text = ("ConnectionError: HTTPConnectionPool(host='h', port=80): Max retries exceeded with url: "
+            "/player_api.php?username=john&password=s3cret&action=get_series_info (Caused by X)")
+    cleaned = scrub_error(text)
+    assert "john" not in cleaned and "s3cret" not in cleaned
+    assert "username=<hidden>" in cleaned and "password=<hidden>" in cleaned and "action=get_series_info" in cleaned
+    assert scrub_error("open failed: /movie/john/s3cret/123.mkv: Server returned 400") == "open failed: /movie/<hidden>/<hidden>/123.mkv: Server returned 400"
+    assert scrub_error("http://h/x/john/s3cret/1.mkv: bad") == "<url>: bad"
+    assert scrub_error("timeout after 25s") == "timeout after 25s"
