@@ -31,6 +31,14 @@ from datetime import datetime, timezone
 # vod-manager).
 
 
+# Dispatcharr sets the level and the handler of a few loggers only (apps, core.*,
+# celery...). A logger outside them falls back on a stricter default in the Celery
+# worker, where only warnings and errors get through: the plugin's own lines
+# (what a dry run would write, the summary of a run) were missing from the log.
+# Under "apps" it follows Dispatcharr's LOG_LEVEL like the rest.
+LOGGER_NAME = "apps.plugins.vod_probe"
+
+
 def _release_db_connections():
     """Hands this thread's database connection back to Dispatcharr's pool.
     Under its gevent pool every worker thread checks a connection out on its
@@ -63,7 +71,7 @@ class _RateLimiter:
 
 class Plugin:
     name = "VOD Probe"
-    version = "0.9.0"
+    version = "0.9.1"
     description = (
         "Probes the real quality of each VOD relation with ffprobe and writes it "
         "into the relation's custom_properties, so every tool reading "
@@ -416,7 +424,7 @@ class Plugin:
     def _probe_run(self, settings, scheduled=False):
         import logging
 
-        logger = logging.getLogger("vod_probe")
+        logger = logging.getLogger(LOGGER_NAME)
         if self.state.is_paused():
             # A scheduled run does not go through the button's own check.
             logger.info("Probe Run not started: the plugin is paused.")
@@ -542,13 +550,13 @@ class Plugin:
         verb = "would get" if dry_run else "got"
         if not result.get("ok"):
             failed = merge_failure(relation.custom_properties, result.get("error"), now)
-            logger.info("vod-probe, relation %s %s: %s", relation_id, verb,
+            (logger.info if dry_run else logger.debug)("vod-probe, relation %s %s: %s", relation_id, verb,
                         json.dumps({"probe": failed["probe"]}, ensure_ascii=False))
             if not dry_run:
                 self._write(model, relation_id, lambda current: merge_failure(current, result.get("error"), now))
             return _outcome(errors=1, error=failed["probe"]["error"], seconds=seconds, retried=was_retry, retried_errors=was_retry)
         merged = merge_success(relation.custom_properties, result, now)
-        logger.info("vod-probe, relation %s %s: %s", relation_id, verb, json.dumps(
+        (logger.info if dry_run else logger.debug)("vod-probe, relation %s %s: %s", relation_id, verb, json.dumps(
             {k: merged[k] for k in ("quality", "resolution", "probe") if k in merged}, ensure_ascii=False))
         if not dry_run:
             self._write(model, relation_id, lambda current: merge_success(current, result, now))
@@ -749,7 +757,7 @@ class Plugin:
             )
             send_websocket_notification(notification)
         except Exception as exc:  # noqa: BLE001 - a notification must never fail the run
-            logging.getLogger("vod_probe").warning("Could not send the completion notification: %s", exc)
+            logging.getLogger(LOGGER_NAME).warning("Could not send the completion notification: %s", exc)
 
     # --- read-only reports (short, fine inside a request) ---------------------
 
@@ -805,7 +813,7 @@ class Plugin:
         from .contract import flag_reload
         from .plan import provider_episode_count, short_versions
 
-        logger = logging.getLogger("vod_probe")
+        logger = logging.getLogger(LOGGER_NAME)
         acquired, held_since = self.state.try_acquire_lock(self._LOCK, self._LOCK_STALE_SECONDS)
         if not acquired:
             return self._busy_message(held_since)
@@ -933,7 +941,7 @@ try:
     def _vod_probe_task(action="probe_run", settings=None, scheduled=True):
         import logging
 
-        logger = logging.getLogger("vod_probe")
+        logger = logging.getLogger(LOGGER_NAME)
         result = Plugin().run(action, {}, {"settings": settings or {}, "background": True, "scheduled": scheduled})
         if result.get("status") == "error":
             logger.error("Background action '%s' failed: %s", action, result.get("message"))
@@ -949,6 +957,6 @@ try:
 except Exception as _celery_register_err:  # pragma: no cover - environment-dependent
     import logging
 
-    logging.getLogger("vod_probe").error(
+    logging.getLogger(LOGGER_NAME).error(
         "Could not register the background task (Probe Run will be unavailable): %s", _celery_register_err
     )

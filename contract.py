@@ -15,7 +15,7 @@ except ImportError:  # imported as a top-level module by the unit tests
     from probe import PROBE_SCHEMA_VERSION, _AD_TITLE_HINTS
 
 PLUGIN_SOURCE = "vod-probe"
-PLUGIN_VERSION = "0.9.0"
+PLUGIN_VERSION = "0.9.1"
 
 STATUS_OK = "ok"
 STATUS_ERROR = "error"

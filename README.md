@@ -239,6 +239,10 @@ Disabling a category in Dispatcharr and syncing makes Dispatcharr remove that gr
 
 Loading an episode list makes Dispatcharr create episodes in its database. A dry run therefore never loads one, and series whose episodes are not loaded yet are only counted.
 
+### Logs
+
+The plugin logs under `apps.plugins.vod_probe`, so it follows Dispatcharr's `DISPATCHARR_LOG_LEVEL` like the rest of Dispatcharr. At the default level you get the summary of each run and, in a **dry run**, one line per relation with the block it *would* write, which is how you inspect a dry run in detail. A run that writes logs those per-relation lines at debug level only, to keep the log short.
+
 ### Use of your provider
 
 Each probe is a real stream connection, and each series version costs one metadata request. Keep concurrency low, and do not run this at the same time as another tool that probes the same relations.
@@ -267,7 +271,7 @@ If a run fails after a Dispatcharr update, look at these first.
 
 ## Status
 
-Version 0.9.0. Tested on a Dispatcharr 0.31.0 test instance with a single Xtream Codes provider, on both movies and series, including a full first pass, disabling and re-enabling groups, failed probes and retries. Not tested on a production instance, with several providers, or with a concurrency above 1. The scheduled trigger itself (the timer firing on its own) has not been observed yet; **Test Fire Now** exercises the same code path.
+Version 0.9.1. Tested on a Dispatcharr 0.31.0 test instance with a single Xtream Codes provider, on both movies and series, including a full first pass, disabling and re-enabling groups, failed probes and retries. Not tested on a production instance, with several providers, or with a concurrency above 1. The scheduled trigger itself (the timer firing on its own) has not been observed yet; **Test Fire Now** exercises the same code path.
 
 ## Development
 

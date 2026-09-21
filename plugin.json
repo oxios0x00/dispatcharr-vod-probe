@@ -1,6 +1,6 @@
 {
   "name": "VOD Probe",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Probes the real quality of each VOD relation (movies and every episode of every series version) with ffprobe in a background task and writes it into the relation's custom_properties, so every tool reading Dispatcharr's API can use it. Dry run by default.",
   "author": "oxios0x00",
   "license": "MIT",
