@@ -1,6 +1,6 @@
 {
   "name": "VOD Probe",
-  "version": "0.4.0",
+  "version": "0.6.0",
   "description": "Probes the real quality of each VOD relation (movies and every episode of every series version) with ffprobe in a background task and writes it into the relation's custom_properties, so every tool reading Dispatcharr's API can use it. Dry run by default.",
   "author": "oxios0x00",
   "license": "MIT",
@@ -38,18 +38,18 @@
       "id": "episode_probing",
       "label": "Episodes: what to probe",
       "type": "select",
-      "default": "first_of_season",
+      "default": "first_of_series",
       "options": [
         {
-          "value": "first_of_season",
-          "label": "One episode per season, copied to the others (recommended)"
+          "value": "first_of_series",
+          "label": "One episode per series version, copied to all the others (recommended)"
         },
         {
           "value": "all",
           "label": "Every episode individually"
         }
       ],
-      "help_text": "Either way, every episode ends up with quality info. With one episode per season, the others get a copy of its result marked status 'inferred' (with inferred_from), and each version of a series (standard, 4K...) is sampled on its own. Cost, measured on a small sample: about 1.2 s per probe. Roughly 1.3 seasons and 9 episodes per series version, so a catalogue of 900 series versions is about 1,200 probes (around 25 minutes) against about 8,000 (around 3 hours) for every episode. Loading the episodes first is needed in both cases: one provider request per series version, roughly 5 to 20 minutes for 900."
+      "help_text": "Either way, every episode ends up with quality info. With one episode per series version, all the others get a copy of its result marked status 'inferred' (with inferred_from), assuming the files of a version are alike whatever the season; each version of a series (standard, 4K...) is sampled on its own. Cost, measured on a small sample: about 1.2 s per probe. One probe per version is about 900 probes for 900 versions (around 15 minutes) whatever the number of seasons, against one probe per episode (roughly 9 per version on the sample, several hours) for 'every episode'. Loading the episode list is needed in both cases: one provider request per series version, around 0.3 to 0.5 s each."
     },
     {
       "id": "max_concurrent_probes",
@@ -114,6 +114,21 @@
       "default": 1.5,
       "min": 0.1,
       "help_text": "Only used by Scan to estimate the duration."
+    },
+    {
+      "id": "schedule_cron",
+      "label": "Schedule (5-field cron)",
+      "type": "string",
+      "default": "",
+      "help_text": "'minute hour day-of-month month day-of-week'. Empty means every day at 04:00. A scheduled run handles everything due, whatever the per-run limit, so it is the small daily run once the big first pass is done. The settings are copied when Apply is clicked: click it again after changing any."
+    },
+    {
+      "id": "schedule_timezone",
+      "label": "Schedule timezone",
+      "type": "string",
+      "default": "",
+      "placeholder": "Europe/Paris",
+      "help_text": "IANA timezone name. Empty means UTC."
     }
   ],
   "actions": [
@@ -164,6 +179,43 @@
       "button_label": "Stats",
       "button_variant": "outline",
       "button_color": "blue"
+    },
+    {
+      "id": "apply_schedule",
+      "label": "[SCHEDULE] Apply",
+      "description": "Registers or updates the periodic Probe Run from the schedule settings (and copies the current settings, Dry run included).",
+      "button_label": "Apply",
+      "button_variant": "outline",
+      "button_color": "blue"
+    },
+    {
+      "id": "remove_schedule",
+      "label": "[SCHEDULE] Remove",
+      "description": "Unregisters the periodic task.",
+      "button_label": "Remove",
+      "button_variant": "outline",
+      "button_color": "orange",
+      "confirm": {
+        "required": true,
+        "title": "Remove the schedule?",
+        "message": "Unregisters the periodic task. You can create it again with Apply."
+      }
+    },
+    {
+      "id": "schedule_status",
+      "label": "[SCHEDULE] Status",
+      "description": "Whether a schedule is registered and when it last ran.",
+      "button_label": "Status",
+      "button_variant": "outline",
+      "button_color": "blue"
+    },
+    {
+      "id": "test_fire_schedule",
+      "label": "[SCHEDULE] Test Fire Now",
+      "description": "Runs the scheduled Probe Run now, as the timer would (everything due, no per-run limit).",
+      "button_label": "Test Fire",
+      "button_variant": "outline",
+      "button_color": "grape"
     }
   ]
 }

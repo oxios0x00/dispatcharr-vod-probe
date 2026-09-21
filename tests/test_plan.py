@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from contract import merge_failure, merge_inferred, merge_success
-from plan import MODE_ALL, MODE_FIRST, episodes_to_infer, plan_season
+from plan import MODE_ALL, MODE_FIRST, episodes_to_infer, plan_series
 
 NOW = datetime(2026, 9, 21, 12, 0, 0, tzinfo=timezone.utc)
 RETRY = timedelta(hours=24)
@@ -16,15 +16,15 @@ INFERRED = merge_inferred({}, MEASURED, 1, NOW)
 
 
 def plan(entries, mode=MODE_FIRST):
-    return plan_season(entries, mode, NOW, RETRY, 3)
+    return plan_series(entries, mode, NOW, RETRY, 3)
 
 
-def test_first_of_season_with_nothing_probed_tries_the_first_episodes_in_order():
+def test_first_of_series_with_nothing_probed_tries_the_first_episodes_in_order():
     result = plan([(1, {}), (2, {}), (3, {}), (4, {}), (5, {})])
     assert result["candidates"] == [1, 2, 3] and result["representative"] is None
 
 
-def test_first_of_season_with_a_measured_episode_infers_the_rest_without_probing():
+def test_first_of_series_with_a_measured_episode_infers_the_rest_without_probing():
     result = plan([(1, MEASURED), (2, {}), (3, INFERRED), (4, merge_failure({}, "x", NOW))])
     assert result["candidates"] == [] and result["representative"] == 1
     assert result["infer"] == [2, 4]

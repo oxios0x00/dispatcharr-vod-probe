@@ -6,10 +6,12 @@ it would write; with it off it writes quality, resolution and probe into the
 relations' custom_properties.
 
 Movies are probed one relation at a time. For series, each series relation (one
-version of a series) has its episodes loaded if needed, then, per season, one
-episode is probed and its result copied to the others (marked "inferred"), or
-every episode is probed, depending on the Episodes setting. Every episode ends
-up with an answer either way.
+version of a series) has its episodes loaded if needed, then one episode is
+probed and its result copied to all the others (marked "inferred"), or every
+episode is probed, depending on the Episodes setting. Every episode ends up
+with an answer either way. A small summary written on the series relation
+(the provider's last_modified, the episode and season counts) lets the daily
+scan read only series relations and open only the ones that changed.
 
 Probe Run runs in a Celery worker, not in the request that clicked it: a pass
 takes minutes, longer than the browser or nginx will wait, so a synchronous
@@ -61,7 +63,7 @@ class _RateLimiter:
 
 class Plugin:
     name = "VOD Probe"
-    version = "0.4.0"
+    version = "0.6.0"
     description = (
         "Probes the real quality of each VOD relation with ffprobe and writes it "
         "into the relation's custom_properties, so every tool reading "
@@ -71,6 +73,7 @@ class Plugin:
     help_url = "https://github.com/oxios0x00/vod-probe"
 
     SCHEDULED_TASK_CELERY_NAME = "vod_probe.run"
+    SCHEDULE_TASK_NAME = "vod_probe.auto_run"
     _BACKGROUND_ACTIONS = {"probe_run"}
     _LOCK = "probe_run"
     # A run renews its lock after every relation; a lock silent this long
@@ -103,6 +106,14 @@ class Plugin:
             if action_id == "resume":
                 self.state.set_paused(False)
                 return {"status": "ok", "message": "Resumed. Start Probe Run again."}
+            if action_id == "apply_schedule":
+                return self._apply_schedule(settings)
+            if action_id == "remove_schedule":
+                return self._remove_schedule()
+            if action_id == "schedule_status":
+                return self._schedule_status()
+            if action_id == "test_fire_schedule":
+                return self._test_fire_schedule(settings)
             if action_id == "scan":
                 return self._scan(settings)
             if action_id == "coverage":
@@ -126,7 +137,9 @@ class Plugin:
                 "message": "Background task failed to register at plugin load — check server logs.",
             }
         try:
-            task_fn.apply_async(kwargs={"action": action_id, "settings": dict(settings or {})}, queue="dvr")
+            task_fn.apply_async(
+                kwargs={"action": action_id, "settings": dict(settings or {}), "scheduled": False}, queue="dvr"
+            )
         except Exception as exc:  # noqa: BLE001 - reported to the user
             return {"status": "error", "message": f"Failed to queue the background run: {exc}"}
         return {
@@ -145,6 +158,108 @@ class Plugin:
                 "without activity."
             ),
         }
+
+    # --- schedule --------------------------------------------------------------
+    #
+    # Dispatcharr has no scheduling API for plugins: like vod-manager, the plugin
+    # registers its own django-celery-beat PeriodicTask, which queues the same
+    # Celery task as the Probe Run button. The settings are copied when Apply is
+    # clicked, so changing a setting afterwards needs Apply again. A scheduled
+    # run always handles everything due (no per-run limit) and never a fixed list
+    # of ids: it is the small daily run that picks up what is new.
+
+    def _schedule_snapshot(self, settings):
+        snapshot = {k: v for k, v in (settings or {}).items() if not k.startswith("schedule_")}
+        snapshot.update(batch_limit=0, only_relation_ids="", only_series_relation_ids="")
+        return snapshot
+
+    def _apply_schedule(self, settings):
+        cron_expr = (settings.get("schedule_cron") or "").strip() or "0 4 * * *"
+        tz_str = (settings.get("schedule_timezone") or "").strip() or "UTC"
+        fields = cron_expr.split()
+        if len(fields) != 5:
+            return {
+                "status": "error",
+                "message": f"Cron expression must have 5 fields (minute hour day-of-month month day-of-week), got: {cron_expr!r}",
+            }
+        try:
+            import pytz
+
+            if tz_str not in pytz.all_timezones_set:
+                return {"status": "error", "message": f"Unknown timezone: {tz_str}"}
+        except ImportError:
+            pass  # let CrontabSchedule validate it
+        try:
+            from django_celery_beat.models import CrontabSchedule, PeriodicTask
+        except ImportError as exc:
+            return {"status": "error", "message": f"django-celery-beat not available ({exc}); scheduling requires it."}
+        minute, hour, dom, month, dow = fields
+        try:
+            schedule, _ = CrontabSchedule.objects.get_or_create(
+                minute=minute, hour=hour, day_of_month=dom, month_of_year=month, day_of_week=dow, timezone=tz_str,
+            )
+        except Exception as exc:  # noqa: BLE001 - reported to the user
+            return {"status": "error", "message": f"Invalid cron expression: {exc}"}
+        _, created = PeriodicTask.objects.update_or_create(
+            name=self.SCHEDULE_TASK_NAME,
+            defaults={
+                "crontab": schedule,
+                "task": self.SCHEDULED_TASK_CELERY_NAME,
+                "queue": "dvr",  # the queue Dispatcharr reserves for long-running background work
+                "kwargs": json.dumps({"action": "probe_run", "settings": self._schedule_snapshot(settings)}),
+                "enabled": True,
+                "description": f"Scheduled run for {self.name} v{self.version}",
+            },
+        )
+        dry = " Dry run is ON: it will only report." if settings.get("dry_run", True) else ""
+        return {
+            "status": "ok",
+            "message": f"{'Created' if created else 'Updated'} schedule: '{cron_expr}' ({tz_str}) -> Probe Run.{dry}",
+        }
+
+    def _remove_schedule(self):
+        try:
+            from django_celery_beat.models import PeriodicTask
+        except ImportError:
+            return {"status": "ok", "message": "django-celery-beat not installed; nothing to remove."}
+        deleted, _ = PeriodicTask.objects.filter(name=self.SCHEDULE_TASK_NAME).delete()
+        return {"status": "ok", "message": f"Removed {deleted} scheduled task(s)."}
+
+    def _schedule_status(self):
+        try:
+            from django_celery_beat.models import PeriodicTask
+        except ImportError:
+            return {"status": "ok", "message": "django-celery-beat not installed."}
+        task = PeriodicTask.objects.filter(name=self.SCHEDULE_TASK_NAME).first()
+        if not task:
+            return {"status": "ok", "message": "No schedule registered."}
+        last_run = task.last_run_at.isoformat() if task.last_run_at else "never"
+        try:
+            dry = json.loads(task.kwargs or "{}").get("settings", {}).get("dry_run", True)
+        except ValueError:
+            dry = True
+        return {
+            "status": "ok",
+            "message": (
+                f"Schedule: {task.crontab} | enabled={task.enabled} | dry run={dry} | "
+                f"last run: {last_run} | total runs: {task.total_run_count}"
+            ),
+        }
+
+    def _test_fire_schedule(self, settings):
+        held_since = self.state.lock_held_since(self._LOCK, self._LOCK_STALE_SECONDS)
+        if held_since:
+            return self._busy_message(held_since)
+        task_fn = globals().get("_vod_probe_task")
+        if task_fn is None:
+            return {"status": "error", "message": "Background task failed to register at plugin load — check server logs."}
+        try:
+            async_result = task_fn.apply_async(
+                kwargs={"action": "probe_run", "settings": self._schedule_snapshot(settings), "scheduled": True}, queue="dvr"
+            )
+        except Exception as exc:  # noqa: BLE001 - reported to the user
+            return {"status": "error", "message": f"Failed to queue the run: {exc}"}
+        return {"status": "ok", "message": f"Test fire queued (task {async_result.id}). Follow it with Run Status."}
 
     # --- selection ---------------------------------------------------------
 
@@ -211,42 +326,30 @@ class Plugin:
             if needs_probe(properties, now, retry_after, max_attempts)
         ]
 
-    def _series_plan(self, settings, now):
-        """{series relation id: {"load": bool, "probes": n, "infer": n}} for
-        every series relation with something to do: episodes still to load, or
-        episodes to probe or to copy a result to."""
-        from .plan import plan_season
+    def _series_due(self, settings, now):
+        """{series relation id: {"reason", "reload", "episodes"}} for every
+        series relation with something to do. Reads series relations only, plus
+        one grouped count of their episodes: never the episodes themselves."""
+        from django.db.models import Count
+
+        from .contract import series_work
 
         mode = self._mode(settings)
         retry_after, max_attempts = self._thresholds(settings)
         series_model = self._series_model()
         _, episode_model = self._relation_models()[1]
-
-        plan = {}
-        loaded = set()
-        for srid, properties in self._active_relations(series_model).values_list("id", "custom_properties").iterator():
-            if (properties or {}).get("episodes_fetched"):
-                loaded.add(srid)
-            else:
-                plan[srid] = {"load": True, "probes": 0, "infer": 0}
-
-        seasons = {}
-        for rid, srid, season, properties in (
-            self._active_relations(episode_model)
-            .order_by("series_relation_id", "episode__season_number", "episode__episode_number")
-            .values_list("id", "series_relation_id", "episode__season_number", "custom_properties")
-            .iterator()
-        ):
-            if srid in loaded:
-                seasons.setdefault((srid, season), []).append((rid, properties))
-        for (srid, _season), entries in seasons.items():
-            result = plan_season(entries, mode, now, retry_after, max_attempts)
-            if result["candidates"] or result["infer"]:
-                item = plan.setdefault(srid, {"load": False, "probes": 0, "infer": 0})
-                # In "one per season" mode the candidates are fallbacks: one probe is expected.
-                item["probes"] += len(result["candidates"]) if mode == "all" else min(1, len(result["candidates"]))
-                item["infer"] += len(result["infer"])
-        return plan
+        counts = {
+            row["series_relation_id"]: row["n"]
+            for row in self._active_relations(episode_model).values("series_relation_id").annotate(n=Count("id"))
+        }
+        due = {}
+        for srid, properties, refreshed in self._active_relations(series_model).values_list(
+            "id", "custom_properties", "last_episode_refresh"
+        ).iterator():
+            work = series_work(properties, counts.get(srid, 0), mode, now, retry_after, max_attempts, refreshed)
+            if work:
+                due[srid] = {**work, "episodes": counts.get(srid, 0)}
+        return due
 
     def _units(self, settings, now):
         """[("movies", id) | ("series", id)]: what a run has to do. With
@@ -259,11 +362,11 @@ class Plugin:
         if only_movies or only_series:
             units = [("movies", rid) for rid in self._movies_due(settings, now)] if only_movies else []
             if only_series:
-                plan = self._series_plan(settings, now)
+                plan = self._series_due(settings, now)
                 units += [("series", srid) for srid in only_series if srid in plan]
             return units
         units = [("movies", rid) for rid in self._movies_due(settings, now)]
-        return units + [("series", srid) for srid in self._series_plan(settings, now)]
+        return units + [("series", srid) for srid in self._series_due(settings, now)]
 
     # --- the run ------------------------------------------------------------
 
@@ -398,13 +501,14 @@ class Plugin:
         return _outcome(probed=1, tiers={merged["probe"]["tier"]: 1}, seconds=seconds, props=merged)
 
     def _run_series(self, series_relation_id, settings, timeout, limiter, now, logger, dry_run):
-        """One version of a series: load its episodes if Dispatcharr has not,
-        then per season probe the episodes the plan asks for and copy the
-        measured result to the others."""
+        """One version of a series: load its episodes if Dispatcharr has not or
+        if the provider's last_modified moved, probe the episodes the plan asks
+        for, copy the measured result to the others, and write the summary on
+        the series relation."""
         from apps.vod.tasks import refresh_series_episodes
 
-        from .contract import merge_inferred
-        from .plan import MODE_FIRST, episodes_to_infer, plan_season
+        from .contract import merge_inferred, series_marker, series_work
+        from .plan import MODE_FIRST, episodes_to_infer, plan_series
 
         mode = self._mode(settings)
         retry_after, max_attempts = self._thresholds(settings)
@@ -415,43 +519,62 @@ class Plugin:
         relation = series_model.objects.select_related("series", "m3u_account").filter(id=series_relation_id).first()
         if relation is None:
             return _outcome(errors=1, error="series relation no longer exists")
-        if not (relation.custom_properties or {}).get("episodes_fetched"):
+        episode_count = episode_model.objects.filter(series_relation_id=series_relation_id).count()
+        work = series_work(
+            relation.custom_properties, episode_count, mode, now, retry_after, max_attempts, relation.last_episode_refresh
+        )
+        if work is None:
+            return out
+        if work["reload"]:
             if dry_run:
-                return out  # loading creates episodes in Dispatcharr: not done in a dry run
+                return out  # loading creates or removes episodes in Dispatcharr: not done in a dry run
             limiter.wait()
-            try:
-                refresh_series_episodes(relation.m3u_account, relation.series, relation.external_series_id)
-            except Exception as exc:  # noqa: BLE001 - reported, the series is retried on a later pass
-                return _outcome(errors=1, error=f"could not load the episodes: {type(exc).__name__}: {exc}")
+            refresh_series_episodes(relation.m3u_account, relation.series, relation.external_series_id)
+            relation = series_model.objects.select_related("series", "m3u_account").get(id=series_relation_id)
+            # Dispatcharr's function catches its own errors and returns nothing: the
+            # flag it sets on success is the only way to tell that the load worked.
+            if not (relation.custom_properties or {}).get("episodes_fetched"):
+                return _outcome(errors=1, error="could not load the episodes (see Dispatcharr's log)")
             out["loaded"] = 1
 
-        seasons = {}
-        for rid, season, properties in (
+        entries = list(
             episode_model.objects.filter(series_relation_id=series_relation_id)
             .order_by("episode__season_number", "episode__episode_number")
-            .values_list("id", "episode__season_number", "custom_properties")
-        ):
-            seasons.setdefault(season, []).append((rid, properties))
+            .values_list("id", "custom_properties")
+        )
+        seasons = len(set(
+            episode_model.objects.filter(series_relation_id=series_relation_id).values_list("episode__season_number", flat=True)
+        ))
+        series_plan = plan_series(entries, mode, now, retry_after, max_attempts)
+        representative = series_plan["representative"]
+        representative_props = dict(entries)[representative] if representative is not None else None
+        infer = series_plan["infer"]
+        for rid in series_plan["candidates"]:
+            result = self._probe_relation(episode_model, rid, timeout, limiter, now, logger, dry_run)
+            _add_outcome(out, result)
+            if mode == MODE_FIRST and result["props"] is not None:
+                representative, representative_props = rid, result["props"]
+                infer = episodes_to_infer(entries, rid)
+                break
+        if mode == MODE_FIRST and representative is not None:
+            for rid in infer:
+                if dry_run or self._write(
+                    episode_model, rid,
+                    lambda current: merge_inferred(current, representative_props, representative, now),
+                ):
+                    out["inferred"] += 1
 
-        for entries in seasons.values():
-            season_plan = plan_season(entries, mode, now, retry_after, max_attempts)
-            representative = season_plan["representative"]
-            representative_props = dict(entries)[representative] if representative is not None else None
-            infer = season_plan["infer"]
-            for rid in season_plan["candidates"]:
-                result = self._probe_relation(episode_model, rid, timeout, limiter, now, logger, dry_run)
-                _add_outcome(out, result)
-                if mode == MODE_FIRST and result["props"] is not None:
-                    representative, representative_props = rid, result["props"]
-                    infer = episodes_to_infer(entries, rid)
-                    break
-            if mode == MODE_FIRST and representative is not None:
-                for rid in infer:
-                    if dry_run or self._write(
-                        episode_model, rid,
-                        lambda current: merge_inferred(current, representative_props, representative, now),
-                    ):
-                        out["inferred"] += 1
+        if not dry_run:
+            last_modified = ((relation.custom_properties or {}).get("basic_data") or {}).get("last_modified")
+            complete_sample = representative if mode == MODE_FIRST else (entries[0][0] if entries and not out["errors"] else None)
+            self._write(
+                series_model, series_relation_id,
+                # The current time, not the start of the pass: the summary must be newer than
+                # the reload done above, or the series would look reloaded after it.
+                lambda current: series_marker(
+                    current, last_modified, len(entries), seasons, mode, complete_sample, datetime.now(timezone.utc)
+                ),
+            )
         return out
 
     @staticmethod
@@ -535,20 +658,24 @@ class Plugin:
         seconds_per_probe = float(settings.get("seconds_per_probe", 1) or 1)
         seconds_per_load = float(settings.get("seconds_per_episode_load", 1.5) or 1.5)
         movies = len(self._movies_due(settings, now))
-        plan = self._series_plan(settings, now)
-        loads = sum(1 for item in plan.values() if item["load"])
-        probes = sum(item["probes"] for item in plan.values())
-        infer = sum(item["infer"] for item in plan.values())
-        total_seconds = (movies + probes) * seconds_per_probe + loads * seconds_per_load
-        mode = "every episode" if self._mode(settings) == "all" else "one episode per season"
+        due = self._series_due(settings, now)
+        reasons = Counter(item["reason"] for item in due.values())
+        reloads = sum(1 for item in due.values() if item["reload"])
+        all_mode = self._mode(settings) == "all"
+        # One probe for each series to load; "all" mode probes every episode of the others.
+        probes = reasons["load"] + (sum(item["episodes"] for item in due.values() if not item["reload"]) if all_mode else 0)
+        total_seconds = (movies + probes) * seconds_per_probe + reloads * seconds_per_load
+        labels = {"load": "never loaded", "unmarked": "no summary yet", "changed": "provider changed it",
+                  "count": "episode count differs", "retry": "retry", "mode": "mode changed",
+                  "reloaded": "reloaded by Dispatcharr since"}
+        detail = ", ".join(f"{labels[k]} {v}" for k, v in reasons.most_common()) or "none"
         return {
             "status": "ok",
             "message": (
-                f"Movies to probe: {movies}. Series versions with something to do: {len(plan)} "
-                f"({loads} whose episodes must be loaded first, which adds their own probes afterwards). "
-                f"Loaded series: {probes} episode probes ({mode}) and {infer} episodes to receive a copy. "
-                f"Estimated time for what is known now: about {total_seconds / 3600:.1f} h, one probe at a time. "
-                "Nothing was written."
+                f"Movies to probe: {movies}. Series versions to handle: {len(due)} ({detail}); "
+                f"{reloads} need their episode list requested from the provider. "
+                f"Estimated: about {total_seconds / 3600:.1f} h ({'every episode' if all_mode else 'one probe per series'}, "
+                "one at a time; series loaded now add their probes once known). Nothing was written."
             ),
         }
 
@@ -597,13 +724,20 @@ try:
     from celery import shared_task as _vod_probe_shared_task
 
     @_vod_probe_shared_task(name=Plugin.SCHEDULED_TASK_CELERY_NAME)
-    def _vod_probe_task(action="probe_run", settings=None):
+    def _vod_probe_task(action="probe_run", settings=None, scheduled=True):
         import logging
 
         logger = logging.getLogger("vod_probe")
         result = Plugin().run(action, {}, {"settings": settings or {}, "background": True})
         if result.get("status") == "error":
             logger.error("Background action '%s' failed: %s", action, result.get("message"))
+        try:
+            from django.utils import timezone
+            from django_celery_beat.models import PeriodicTask
+
+            PeriodicTask.objects.filter(name=Plugin.SCHEDULE_TASK_NAME).update(last_run_at=timezone.now())
+        except Exception as exc:  # noqa: BLE001 - only bookkeeping
+            logger.warning("Could not update the schedule's last run time: %s", exc)
         return result
 except Exception as _celery_register_err:  # pragma: no cover - environment-dependent
     import logging

@@ -129,3 +129,44 @@ def test_needs_inference():
     assert not needs_inference(ok)
     assert not needs_inference(ok["probe"] and {"probe": {**ok["probe"], "status": "inferred"}})
     assert needs_inference({"probe": {**ok["probe"], "schema_version": 1}})
+
+
+def test_series_marker_ok_and_pending():
+    from contract import series_marker
+
+    ok = series_marker({"basic_data": {"last_modified": "5"}, "episodes_fetched": True}, 5, 20, 2, "first_of_series", 99, NOW)
+    assert ok["basic_data"] == {"last_modified": "5"} and ok["episodes_fetched"] is True
+    marker = ok["probe"]
+    assert marker["status"] == "ok" and marker["episodes"] == 20 and marker["seasons"] == 2
+    assert marker["last_modified"] == "5" and marker["sampled_from"] == 99 and "attempts" not in marker
+    pending = series_marker(ok, 5, 20, 2, "first_of_series", None, NOW)["probe"]
+    assert pending["status"] == "pending" and pending["attempts"] == 1
+    assert series_marker({}, 5, 0, 0, "first_of_series", None, NOW)["probe"]["status"] == "pending"
+
+
+def test_series_work():
+    from contract import series_marker, series_work
+
+    fresh = {"episodes_fetched": True, "basic_data": {"last_modified": "5"}}
+    assert series_work({"episodes_fetched": False}, 0, "first_of_series", NOW) == {"reason": "load", "reload": True}
+    assert series_work(fresh, 20, "first_of_series", NOW) == {"reason": "unmarked", "reload": False}
+    done = series_marker(fresh, 5, 20, 2, "first_of_series", 99, NOW)
+    assert series_work(done, 20, "first_of_series", NOW) is None
+    assert series_work(done, 21, "first_of_series", NOW) == {"reason": "count", "reload": False}
+    moved = {**done, "basic_data": {"last_modified": "6"}}
+    assert series_work(moved, 20, "first_of_series", NOW) == {"reason": "changed", "reload": True}
+    assert series_work(done, 20, "all", NOW) == {"reason": "mode", "reload": False}
+    pending = series_marker(fresh, 5, 20, 2, "first_of_series", None, NOW)
+    assert series_work(pending, 20, "first_of_series", NOW) is None  # too soon to retry
+    assert series_work(pending, 20, "first_of_series", NOW + timedelta(hours=25)) == {"reason": "retry", "reload": False}
+
+
+def test_a_reload_by_dispatcharr_after_our_summary_forces_reprocessing():
+    from contract import series_marker, series_work
+
+    fresh = {"episodes_fetched": True, "basic_data": {"last_modified": "5"}}
+    done = series_marker(fresh, 5, 20, 2, "first_of_series", 99, NOW)
+    assert series_work(done, 20, "first_of_series", NOW, last_episode_refresh=NOW - timedelta(hours=1)) is None
+    assert series_work(done, 20, "first_of_series", NOW, last_episode_refresh=NOW + timedelta(minutes=5)) == {
+        "reason": "reloaded", "reload": False,
+    }

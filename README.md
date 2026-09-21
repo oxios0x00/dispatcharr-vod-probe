@@ -6,7 +6,7 @@ It only writes `quality`, `resolution` and a `probe` block. It never deletes, me
 
 ## Status
 
-Version 0.4.0, tested on a Dispatcharr test instance only: movies, and 6 series versions (54 episodes). The full catalogue has not been run yet.
+Version 0.6.0, tested on a Dispatcharr test instance only: about 630 movies and 450 series versions so far; the full catalogue pass is not finished.
 
 Actions:
 
@@ -16,11 +16,11 @@ Actions:
 
 Only relations of active accounts in enabled categories are considered. `quality_info` (the field Dispatcharr's API and its source labels already read) then shows the probed quality. The rest of the block is for API clients; see [DESIGN.md](DESIGN.md) for the contract and the open questions.
 
-Series: each version of a series (standard, 4K...) is its own relation and is handled on its own. Its episodes are loaded first if Dispatcharr has not (one provider request per version), then, per season, either one episode is probed and copied to the others (marked `status: inferred`, `inferred_from`) or every episode is probed, depending on the **Episodes** setting. Every episode gets an answer either way.
+Series: each version of a series (standard, 4K...) is its own relation and is handled on its own. Its episodes are loaded first if Dispatcharr has not (one provider request per version, about 0.3 to 0.5 s), then either one episode is probed and its result copied to all the others (marked `status: inferred`, `inferred_from`) or every episode is probed, depending on the **Episodes** setting. Every episode gets an answer either way. Each series relation also gets a small summary in its `custom_properties.probe` (the provider's `last_modified`, the episode and season counts).
 
-Incremental by design: only relations without a current `probe` block are due, so a big first pass (Relations per run = 0) is followed by small runs that only pick up new titles, new episodes and retries. A new episode of a known season is copied from the measured one without any probe.
+Incremental by design: the daily scan reads series relations only, never the episodes. A series is due when it was never loaded, has no summary, the provider's `last_modified` moved (its episode list is then requested again), the number of episodes differs, or Dispatcharr reloaded it since our summary. That last case matters: **a reload by Dispatcharr (which the UI triggers when a series is opened after 24 hours) replaces the whole `custom_properties` of every episode relation of that series, so our data on them is erased** until the next scan puts it back (one probe and copies). Movies are due when they have no current `probe` block.
 
-Not done yet: a schedule for the daily run, the slow re-probe rotation, and a locked write test against a concurrent list sync.
+A daily schedule is available (Apply Schedule); its timer firing has not been observed yet. Not done: the slow re-probe rotation, and a test against a concurrent list sync.
 
 ## Install
 

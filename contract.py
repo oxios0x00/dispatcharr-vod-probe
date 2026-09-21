@@ -15,7 +15,7 @@ except ImportError:  # imported as a top-level module by the unit tests
     from probe import PROBE_SCHEMA_VERSION, _AD_TITLE_HINTS
 
 PLUGIN_SOURCE = "vod-probe"
-PLUGIN_VERSION = "0.4.0"
+PLUGIN_VERSION = "0.6.0"
 
 STATUS_OK = "ok"
 STATUS_ERROR = "error"
@@ -247,6 +247,67 @@ def merge_inferred(existing, source_properties, source_relation_id, now):
     )
     merged["probe"] = block
     return merged
+
+
+def series_marker(existing, last_modified, episodes, seasons, mode, sampled_from, now):
+    """New custom_properties for a series relation once its episodes have been
+    handled. The marker records what was seen (the provider's last_modified,
+    the episode and season counts), so the daily scan only has to read series
+    relations, and only opens the series whose last_modified moved. It is
+    "pending" when some episodes still lack an answer or none were found: the
+    series is retried later, at most max_attempts times."""
+    merged = dict(existing or {})
+    previous = merged.get("probe") if isinstance(merged.get("probe"), dict) else {}
+    complete = episodes > 0 and sampled_from is not None or (mode == "all" and episodes > 0)
+    marker = {
+        "schema_version": PROBE_SCHEMA_VERSION,
+        "status": STATUS_OK if complete else "pending",
+        "probed_at": _iso(now),
+        "last_modified": None if last_modified is None else str(last_modified),
+        "episodes": episodes,
+        "seasons": seasons,
+        "mode": mode,
+        "source": {"plugin": PLUGIN_SOURCE, "version": PLUGIN_VERSION},
+    }
+    if sampled_from is not None:
+        marker["sampled_from"] = sampled_from
+    if not complete:
+        marker["attempts"] = int(previous.get("attempts") or 0) + 1
+    merged["probe"] = marker
+    return merged
+
+
+def series_work(custom_properties, episode_count, mode, now, retry_after=timedelta(hours=24), max_attempts=3, last_episode_refresh=None):
+    """What a series relation needs, from its own properties and the number of
+    episodes Dispatcharr holds for it: None, or {"reason": ..., "reload": bool}.
+    Reload means asking the provider for the episode list again: the series has
+    never been loaded, or the provider's last_modified moved since we last
+    looked. A series whose episodes Dispatcharr reloaded after our summary
+    (last_episode_refresh is newer) is reprocessed too: a reload, which the UI
+    triggers when a series is opened after 24 hours, replaces the whole
+    custom_properties of every episode relation and so erases what we wrote."""
+    properties = custom_properties or {}
+    if not properties.get("episodes_fetched"):
+        return {"reason": "load", "reload": True}
+    marker = properties.get("probe")
+    if not isinstance(marker, dict) or marker.get("schema_version") != PROBE_SCHEMA_VERSION:
+        return {"reason": "unmarked", "reload": False}
+    summarised_at = _parse_iso(marker.get("probed_at"))
+    if last_episode_refresh is not None and summarised_at is not None and last_episode_refresh > summarised_at:
+        return {"reason": "reloaded", "reload": False}
+    current = (properties.get("basic_data") or {}).get("last_modified")
+    if str(current) != str(marker.get("last_modified")) and not (current is None and marker.get("last_modified") is None):
+        return {"reason": "changed", "reload": True}
+    if marker.get("status") != STATUS_OK:
+        last = _parse_iso(marker.get("probed_at"))
+        if int(marker.get("attempts") or 0) < max_attempts and (last is None or now - last >= retry_after):
+            return {"reason": "retry", "reload": False}
+        return None
+    if mode == "all" and marker.get("mode") != "all":
+        return {"reason": "mode", "reload": False}
+    if episode_count != marker.get("episodes"):
+        return {"reason": "count", "reload": False}
+    return None
 
 
 def coverage_bucket(custom_properties):

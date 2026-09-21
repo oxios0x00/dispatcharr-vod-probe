@@ -1,28 +1,30 @@
-"""What to probe and what to copy inside one season of one series version.
+"""What to probe and what to copy inside one version of a series.
 
-Pure Python, no Django. The sampling key is the season of one series
-relation: the standard and the 4K version of a series are separate relations
-(often in the same account), each with its own files, so they never share a
-sample."""
+Pure Python, no Django. The sampling key is one series relation: the standard
+and the 4K version of a series are separate relations (often in the same
+account), each with its own files, so they never share a sample. Within a
+version, all episodes are assumed to have similar characteristics, whatever the
+season."""
 try:
     from .contract import is_measured, needs_inference, needs_probe
 except ImportError:  # imported as a top-level module by the unit tests
     from contract import is_measured, needs_inference, needs_probe
 
-MODE_FIRST = "first_of_season"
+MODE_FIRST = "first_of_series"
 MODE_ALL = "all"
 
-# How many episodes of a season are tried, one after the other, to find one
-# that can be probed, before the season is left for the next pass.
+# How many episodes are tried, one after the other, to find one that can be
+# probed, before the series is left for the next pass.
 MAX_SAMPLE_TRIES = 3
 
 
-def plan_season(entries, mode, now, retry_after, max_attempts):
-    """entries: [(relation_id, custom_properties)] in episode order.
+def plan_series(entries, mode, now, retry_after, max_attempts):
+    """entries: [(relation_id, custom_properties)] for every episode of one
+    series relation, in season and episode order.
 
     Returns {"candidates": [...], "representative": id or None, "infer": [...]}:
     - mode "all": candidates are every episode due for a probe; nothing is copied.
-    - mode "first_of_season": if a measured episode exists it is the
+    - mode "first_of_series": if a measured episode exists it is the
       representative and the others still lacking a block are to be
       inferred. Otherwise the due episodes, in order, are the candidates to
       try; the caller infers the rest once one of them succeeds."""
