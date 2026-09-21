@@ -167,6 +167,8 @@ def test_a_reload_by_dispatcharr_after_our_summary_forces_reprocessing():
     fresh = {"episodes_fetched": True, "basic_data": {"last_modified": "5"}}
     done = series_marker(fresh, 5, 20, 2, "first_of_series", 99, NOW)
     assert series_work(done, 20, "first_of_series", NOW, last_episode_refresh=NOW - timedelta(hours=1)) is None
+    # our own reload, a fraction of a second before the summary's truncated time
+    assert series_work(done, 20, "first_of_series", NOW, last_episode_refresh=NOW + timedelta(seconds=1)) is None
     assert series_work(done, 20, "first_of_series", NOW, last_episode_refresh=NOW + timedelta(minutes=5)) == {
         "reason": "reloaded", "reload": False,
     }

@@ -21,6 +21,7 @@ STATUS_OK = "ok"
 STATUS_ERROR = "error"
 STATUS_UNREACHABLE = "unreachable"
 STATUS_INFERRED = "inferred"
+RELOAD_TOLERANCE = timedelta(seconds=2)
 
 # probe.tier -> the vocabulary Dispatcharr's own quality_info uses, so any
 # client that already reads quality_info needs no change.
@@ -293,7 +294,9 @@ def series_work(custom_properties, episode_count, mode, now, retry_after=timedel
     if not isinstance(marker, dict) or marker.get("schema_version") != PROBE_SCHEMA_VERSION:
         return {"reason": "unmarked", "reload": False}
     summarised_at = _parse_iso(marker.get("probed_at"))
-    if last_episode_refresh is not None and summarised_at is not None and last_episode_refresh > summarised_at:
+    # The summary's time is truncated to the second and written just after our own
+    # reload, so a small tolerance keeps that reload from being taken for another one.
+    if last_episode_refresh is not None and summarised_at is not None and last_episode_refresh > summarised_at + RELOAD_TOLERANCE:
         return {"reason": "reloaded", "reload": False}
     current = (properties.get("basic_data") or {}).get("last_modified")
     if str(current) != str(marker.get("last_modified")) and not (current is None and marker.get("last_modified") is None):
