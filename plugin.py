@@ -174,7 +174,11 @@ class Plugin:
         return snapshot
 
     def _apply_schedule(self, settings):
-        cron_expr = (settings.get("schedule_cron") or "").strip() or "0 4 * * *"
+        cron_expr = (settings.get("schedule_cron") or "").strip()
+        if not cron_expr:
+            # Empty means no schedule: Apply then also removes one that exists.
+            removed = self._remove_schedule()
+            return {"status": "ok", "message": f"Schedule is empty, so there is none. {removed['message']}"}
         tz_str = (settings.get("schedule_timezone") or "").strip() or "UTC"
         fields = cron_expr.split()
         if len(fields) != 5:

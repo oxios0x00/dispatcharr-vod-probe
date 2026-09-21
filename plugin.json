@@ -120,7 +120,7 @@
       "label": "Schedule (5-field cron)",
       "type": "string",
       "default": "",
-      "help_text": "'minute hour day-of-month month day-of-week'. Empty means every day at 04:00. A scheduled run handles everything due, whatever the per-run limit, so it is the small daily run once the big first pass is done. The settings are copied when Apply is clicked: click it again after changing any."
+      "help_text": "'minute hour day-of-month month day-of-week', for example '0 4 * * *' for every day at 04:00. Empty (the default) means no schedule: Apply then removes any existing one. A scheduled run handles everything due, whatever the per-run limit, so it is the small daily run once the big first pass is done. The settings are copied when Apply is clicked: click it again after changing any."
     },
     {
       "id": "schedule_timezone",
