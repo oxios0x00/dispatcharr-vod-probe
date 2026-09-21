@@ -68,6 +68,48 @@ A relation that was never probed simply has no `probe` block, and `quality_info`
 
 Error messages are stripped of URLs before they are stored: a provider URL carries your account's credentials, and `custom_properties` is readable through the API.
 
+### The series summary
+
+Each series relation (one version of a series) also carries its own `custom_properties.probe`, a summary of what the plugin did with its episodes:
+
+```json
+"probe": {
+  "schema_version": 5,
+  "status": "ok",
+  "probed_at": "2026-09-21T14:30:02Z",
+  "last_modified": "1789592978",
+  "episodes": 8,
+  "seasons": 1,
+  "mode": "first_of_series",
+  "sampled_from": 12349,
+  "source": { "plugin": "vod-probe", "version": "0.9.0" }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `schema_version` | Format version, as for a relation. |
+| `status` | `ok`: the episodes are loaded and **every episode has an answer**, measured or inferred. `pending`: not yet (no episode found, no sample could be probed, or an episode still failing). A series with no summary has not been handled yet. |
+| `probed_at` | When the summary was written (UTC). |
+| `last_modified` | The provider's own "last modified" value for the series at that time. |
+| `episodes`, `seasons` | How many the plugin saw. |
+| `mode` | The **Episodes** setting used: `first_of_series`, `first_of_season` or `all`. |
+| `sampled_from` | The episode relation that was probed and copied from. In *Every episode* mode it is simply the first episode. Present when `status` is `ok`. |
+| `attempts` | How many times a `pending` series was handled. |
+| `retry`, `reload` | Internal flags set by Retry Errors and Reload Incomplete Series. Ignore them. |
+
+### What you can rely on
+
+If you build on this data, these are the rules:
+
+- **A relation has a usable result** when `probe.status` is `ok` or `inferred` and `probe.tier` is set. `error` and `unreachable` mean the probe was tried and failed. No `probe` block means the relation has not been handled yet. A series is fully answered when its summary's `status` is `ok`.
+- **Documented fields keep their name and meaning** as long as `schema_version` does not change. It is currently **5**.
+- **Fields may be added without a version change**, so ignore the ones you do not know.
+- **A rename, a removal or a change of meaning raises `schema_version`.** Treat a block whose version you do not know as not measured.
+- **Not part of the contract:** the text of `error`, `attempts`, `retry`, `reload` and `source`. They are informational and may change.
+- **`quality`** (next to `probe`) uses Dispatcharr's own vocabulary, so `quality_info` keeps working.
+- **Data can be missing for a while.** When Dispatcharr reloads a series, it erases what was written on its episodes until the next run (see [below](#dispatcharr-can-erase-what-was-written-on-episodes)). A consumer should treat a missing block as "not measured yet", not as an error.
+
 ## How it works
 
 ### Movies
@@ -210,13 +252,26 @@ Each probe is a real stream connection, and each series version costs one metada
 - **Detecting a new episode relies on `last_modified`.** It is the provider's own timestamp on each series, and whether a provider bumps it when an episode is added depends on that provider.
 - **The UI shows less than the API.** From reading Dispatcharr's front-end code, its interface uses `quality_info` only in the label of each source of a movie, and its "Technical Details" panel reads the provider's own data, not the plugin's. Cards and lists show no quality.
 
+## Compatibility
+
+Developed and tested against **Dispatcharr 0.31.0** (image `ghcr.io/dispatcharr/dispatcharr:latest`, September 2026) with Python 3.13.
+
+The plugin relies on parts of Dispatcharr that are not a public API, so an update can break it:
+
+- the models `M3UMovieRelation`, `M3USeriesRelation`, `M3UEpisodeRelation` and `M3UVODCategoryRelation` (`apps.vod.models`), including the fields `custom_properties`, `last_episode_refresh` and `series_relation`;
+- `refresh_series_episodes` (`apps.vod.tasks`), the function that loads a series' episodes;
+- the Xtream client (`core.xtream_codes`) and `SystemNotification` (`core.models`);
+- `django-celery-beat` and the `dvr` Celery queue.
+
+If a run fails after a Dispatcharr update, look at these first.
+
 ## Status
 
-Version 0.9.0. Tested on a Dispatcharr test instance with a single Xtream Codes provider, on both movies and series, including a full first pass, disabling and re-enabling groups, failed probes and retries. Not tested on a production instance, with several providers, or with a concurrency above 1. The scheduled trigger itself (the timer firing on its own) has not been observed yet; **Test Fire Now** exercises the same code path.
+Version 0.9.0. Tested on a Dispatcharr 0.31.0 test instance with a single Xtream Codes provider, on both movies and series, including a full first pass, disabling and re-enabling groups, failed probes and retries. Not tested on a production instance, with several providers, or with a concurrency above 1. The scheduled trigger itself (the timer firing on its own) has not been observed yet; **Test Fire Now** exercises the same code path.
 
 ## Development
 
-The pure logic (the data contract, the season and series planning, the circuit breaker, the run state) has no Django dependency and is unit-tested:
+The pure logic (the data contract, the season and series planning, the circuit breaker, the run state) has no Django dependency and is unit-tested. `tests/test_consumer_contract.py` reads the blocks the way a consumer would and checks that the documented fields are there, so a change that would break a tool built on this data fails a test:
 
 ```bash
 python3 -m pytest
