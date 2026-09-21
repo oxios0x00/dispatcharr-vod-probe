@@ -1,3 +1,5 @@
+> **Note de conception initiale (2026-09-21), en partie dépassée.** Elle garde la réflexion de départ. Le comportement actuel du plugin (échantillonnage des séries, résumé par série, réessai des erreurs, planification) est décrit dans le [README](README.md).
+
 # vod-probe : note de conception (2026-09-21)
 
 Plugin Dispatcharr indépendant qui sonde les relations VOD et écrit le résultat dans le catalogue de Dispatcharr, pour que tous les outils qui lisent son API puissent s'en servir. Projet séparé de vod-manager et de Strmarr, à décider plus tard. Chaque fait est marqué **[vérifié]** (lu dans le code de Dispatcharr ou du plugin, ou testé sur mon installation) ou **[non vérifié]**.
