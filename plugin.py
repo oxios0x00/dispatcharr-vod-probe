@@ -5,6 +5,12 @@ Probe Run probes for real. With Dry run on (the default) it only reports what
 it would write; with it off it writes quality, resolution and probe into the
 relations' custom_properties.
 
+Movies are probed one relation at a time. For series, each series relation (one
+version of a series) has its episodes loaded if needed, then, per season, one
+episode is probed and its result copied to the others (marked "inferred"), or
+every episode is probed, depending on the Episodes setting. Every episode ends
+up with an answer either way.
+
 Probe Run runs in a Celery worker, not in the request that clicked it: a pass
 takes minutes, longer than the browser or nginx will wait, so a synchronous
 click ended in a 504 while the work carried on unseen (the same lesson as
@@ -55,7 +61,7 @@ class _RateLimiter:
 
 class Plugin:
     name = "VOD Probe"
-    version = "0.3.0"
+    version = "0.4.0"
     description = (
         "Probes the real quality of each VOD relation with ffprobe and writes it "
         "into the relation's custom_properties, so every tool reading "
@@ -170,26 +176,94 @@ class Plugin:
         )
         return model.objects.filter(m3u_account__is_active=True).filter(Exists(enabled))
 
-    def _due(self, settings, now):
-        """[(label, relation id)] of every relation due for a probe, or, when
-        only_relation_ids is set, exactly those movie relations (forced, even
-        if already probed)."""
+    @staticmethod
+    def _series_model():
+        from apps.vod.models import M3USeriesRelation
+
+        return M3USeriesRelation
+
+    @staticmethod
+    def _mode(settings):
+        from .plan import MODE_ALL, MODE_FIRST
+
+        return MODE_ALL if settings.get("episode_probing") == MODE_ALL else MODE_FIRST
+
+    @staticmethod
+    def _thresholds(settings):
+        retry_after = timedelta(hours=float(settings.get("retry_after_hours", 24) or 24))
+        return retry_after, int(settings.get("max_attempts", 3) or 3)
+
+    def _movies_due(self, settings, now):
+        """Ids of the movie relations due for a probe, or, when
+        only_relation_ids is set, exactly those (forced, even if already
+        probed)."""
         from .contract import needs_probe
 
+        _, movie_model = self._relation_models()[0]
         only = [int(x) for x in str(settings.get("only_relation_ids") or "").replace(" ", "").split(",") if x.isdigit()]
         if only:
-            _, movie_model = self._relation_models()[0]
             found = set(self._active_relations(movie_model).filter(id__in=only).values_list("id", flat=True))
-            return [("movies", rid) for rid in only if rid in found]
+            return [rid for rid in only if rid in found]
+        retry_after, max_attempts = self._thresholds(settings)
+        return [
+            rid
+            for rid, properties in self._active_relations(movie_model).values_list("id", "custom_properties").iterator()
+            if needs_probe(properties, now, retry_after, max_attempts)
+        ]
 
-        retry_after = timedelta(hours=float(settings.get("retry_after_hours", 24) or 24))
-        max_attempts = int(settings.get("max_attempts", 3) or 3)
-        due = []
-        for label, model in self._relation_models():
-            for rid, properties in self._active_relations(model).values_list("id", "custom_properties").iterator():
-                if needs_probe(properties, now, retry_after, max_attempts):
-                    due.append((label, rid))
-        return due
+    def _series_plan(self, settings, now):
+        """{series relation id: {"load": bool, "probes": n, "infer": n}} for
+        every series relation with something to do: episodes still to load, or
+        episodes to probe or to copy a result to."""
+        from .plan import plan_season
+
+        mode = self._mode(settings)
+        retry_after, max_attempts = self._thresholds(settings)
+        series_model = self._series_model()
+        _, episode_model = self._relation_models()[1]
+
+        plan = {}
+        loaded = set()
+        for srid, properties in self._active_relations(series_model).values_list("id", "custom_properties").iterator():
+            if (properties or {}).get("episodes_fetched"):
+                loaded.add(srid)
+            else:
+                plan[srid] = {"load": True, "probes": 0, "infer": 0}
+
+        seasons = {}
+        for rid, srid, season, properties in (
+            self._active_relations(episode_model)
+            .order_by("series_relation_id", "episode__season_number", "episode__episode_number")
+            .values_list("id", "series_relation_id", "episode__season_number", "custom_properties")
+            .iterator()
+        ):
+            if srid in loaded:
+                seasons.setdefault((srid, season), []).append((rid, properties))
+        for (srid, _season), entries in seasons.items():
+            result = plan_season(entries, mode, now, retry_after, max_attempts)
+            if result["candidates"] or result["infer"]:
+                item = plan.setdefault(srid, {"load": False, "probes": 0, "infer": 0})
+                # In "one per season" mode the candidates are fallbacks: one probe is expected.
+                item["probes"] += len(result["candidates"]) if mode == "all" else min(1, len(result["candidates"]))
+                item["infer"] += len(result["infer"])
+        return plan
+
+    def _units(self, settings, now):
+        """[("movies", id) | ("series", id)]: what a run has to do. With
+        only_relation_ids (movies) or only_series_relation_ids (series
+        versions) set, only those, and nothing else."""
+        only_movies = str(settings.get("only_relation_ids") or "").strip()
+        only_series = [
+            int(x) for x in str(settings.get("only_series_relation_ids") or "").replace(" ", "").split(",") if x.isdigit()
+        ]
+        if only_movies or only_series:
+            units = [("movies", rid) for rid in self._movies_due(settings, now)] if only_movies else []
+            if only_series:
+                plan = self._series_plan(settings, now)
+                units += [("series", srid) for srid in only_series if srid in plan]
+            return units
+        units = [("movies", rid) for rid in self._movies_due(settings, now)]
+        return units + [("series", srid) for srid in self._series_plan(settings, now)]
 
     # --- the run ------------------------------------------------------------
 
@@ -214,52 +288,48 @@ class Plugin:
         dry_run = bool(settings.get("dry_run", True))
         now = datetime.now(timezone.utc)
 
-        due = self._due(settings, now)
-        available = len(due)
+        units = self._units(settings, now)
+        available = len(units)
         if limit > 0 and available > limit:
             import random
 
-            due = random.sample(due, limit)
+            units = random.sample(units, limit)
         progress = {
             "started": time.time(), "finished": None, "dry_run": dry_run, "available": available,
-            "total": len(due), "processed": 0, "errors": 0, "tiers": {}, "error_examples": [],
-            "seconds": 0.0, "note": "",
+            "total": len(units), "processed": 0, "errors": 0, "probed": 0, "inferred": 0, "loaded": 0,
+            "tiers": {}, "error_examples": [], "seconds": 0.0, "note": "",
         }
         self.state.set("run", progress)
-        models = dict(self._relation_models())
         tiers = Counter()
         stopped = False
 
         with ThreadPoolExecutor(max_workers=max_concurrent) as pool:
             futures = {
-                pool.submit(self._probe_one, models[label], rid, timeout, limiter, now, logger, dry_run): (label, rid)
-                for label, rid in due
+                pool.submit(self._run_unit, kind, uid, settings, timeout, limiter, now, logger, dry_run): (kind, uid)
+                for kind, uid in units
             }
             for future in as_completed(futures):
                 if future.cancelled():
                     continue
-                label, rid = futures[future]
+                kind, uid = futures[future]
                 try:
                     outcome = future.result()
                 except Exception as exc:  # noqa: BLE001 - counted, never fatal for the pass
-                    outcome = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "seconds": 0.0}
+                    outcome = _outcome(errors=1, error=f"{type(exc).__name__}: {exc}")
                 progress["processed"] += 1
-                progress["seconds"] += outcome.get("seconds", 0.0)
-                if outcome["ok"]:
-                    tiers[outcome["tier"]] += 1
-                else:
-                    progress["errors"] += 1
-                    if len(progress["error_examples"]) < 3:
-                        progress["error_examples"].append(f"{label} {rid}: {outcome['error'][:120]}")
+                for key in ("errors", "probed", "inferred", "loaded"):
+                    progress[key] += outcome[key]
+                progress["seconds"] += outcome["seconds"]
+                tiers.update(outcome["tiers"])
+                if outcome["error"] and len(progress["error_examples"]) < 3:
+                    progress["error_examples"].append(f"{kind} {uid}: {outcome['error'][:120]}")
                 progress["tiers"] = dict(tiers)
                 self.state.set("run", progress)
                 self.state.renew_lock(self._LOCK)
 
-                paused = self.state.is_paused()
-                tripped = (
-                    progress["processed"] >= 5 and progress["errors"] / progress["processed"] > breaker_ratio
-                )
-                if (paused or tripped) and not stopped:
+                attempts = progress["probed"] + progress["errors"]
+                tripped = attempts >= 5 and progress["errors"] / attempts > breaker_ratio
+                if (self.state.is_paused() or tripped) and not stopped:
                     stopped = True
                     if tripped:
                         self.state.set_paused(True)
@@ -276,49 +346,113 @@ class Plugin:
         self._notify(message, stopped)
         return {"status": "ok", "message": message}
 
-    def _probe_one(self, model, relation_id, timeout, limiter, now, logger, dry_run):
-        """Probe one relation and report what would be written. Nothing is
-        written. One retry on the transient gevent scheduling error seen in
-        vod-manager ("This operation would block forever")."""
+    def _run_unit(self, kind, unit_id, settings, timeout, limiter, now, logger, dry_run):
+        """One movie relation or one series relation. One retry on the
+        transient gevent scheduling error seen in vod-manager ("This
+        operation would block forever")."""
         try:
             try:
-                return self._probe_one_once(model, relation_id, timeout, limiter, now, logger, dry_run)
+                return self._run_unit_once(kind, unit_id, settings, timeout, limiter, now, logger, dry_run)
             except Exception as exc:
                 if "would block forever" not in str(exc):
                     raise
-                return self._probe_one_once(model, relation_id, timeout, limiter, now, logger, dry_run)
+                return self._run_unit_once(kind, unit_id, settings, timeout, limiter, now, logger, dry_run)
         finally:
             _release_db_connections()
 
-    def _probe_one_once(self, model, relation_id, timeout, limiter, now, logger, dry_run):
+    def _run_unit_once(self, kind, unit_id, settings, timeout, limiter, now, logger, dry_run):
+        if kind == "movies":
+            _, model = self._relation_models()[0]
+            return self._probe_relation(model, unit_id, timeout, limiter, now, logger, dry_run)
+        return self._run_series(unit_id, settings, timeout, limiter, now, logger, dry_run)
+
+    def _probe_relation(self, model, relation_id, timeout, limiter, now, logger, dry_run):
+        """Probe one relation and, unless dry_run, write the result. Returns an
+        outcome, with the block it produced under "props" on success."""
         from .contract import merge_failure, merge_success
         from .probe import probe_stream
 
         relation = model.objects.filter(id=relation_id).first()
         if relation is None:
-            return {"ok": False, "error": "relation no longer exists", "seconds": 0.0}
+            return _outcome(errors=1, error="relation no longer exists")
         url = relation.get_stream_url()
         if not url:
-            return {"ok": False, "error": "no stream URL", "seconds": 0.0}
+            return _outcome(errors=1, error="no stream URL")
         limiter.wait()
         started = time.monotonic()
         result = probe_stream(url, timeout_seconds=timeout)
         seconds = time.monotonic() - started
+        verb = "would get" if dry_run else "got"
         if not result.get("ok"):
             failed = merge_failure(relation.custom_properties, result.get("error"), now)
-            verb = "would get" if dry_run else "got"
             logger.info("vod-probe, relation %s %s: %s", relation_id, verb,
                         json.dumps({"probe": failed["probe"]}, ensure_ascii=False))
             if not dry_run:
                 self._write(model, relation_id, lambda current: merge_failure(current, result.get("error"), now))
-            return {"ok": False, "error": failed["probe"]["error"], "seconds": seconds}
+            return _outcome(errors=1, error=failed["probe"]["error"], seconds=seconds)
         merged = merge_success(relation.custom_properties, result, now)
-        verb = "would get" if dry_run else "got"
         logger.info("vod-probe, relation %s %s: %s", relation_id, verb, json.dumps(
             {k: merged[k] for k in ("quality", "resolution", "probe") if k in merged}, ensure_ascii=False))
         if not dry_run:
             self._write(model, relation_id, lambda current: merge_success(current, result, now))
-        return {"ok": True, "tier": merged["probe"]["tier"], "seconds": seconds}
+        return _outcome(probed=1, tiers={merged["probe"]["tier"]: 1}, seconds=seconds, props=merged)
+
+    def _run_series(self, series_relation_id, settings, timeout, limiter, now, logger, dry_run):
+        """One version of a series: load its episodes if Dispatcharr has not,
+        then per season probe the episodes the plan asks for and copy the
+        measured result to the others."""
+        from apps.vod.tasks import refresh_series_episodes
+
+        from .contract import merge_inferred
+        from .plan import MODE_FIRST, episodes_to_infer, plan_season
+
+        mode = self._mode(settings)
+        retry_after, max_attempts = self._thresholds(settings)
+        series_model = self._series_model()
+        _, episode_model = self._relation_models()[1]
+        out = _outcome()
+
+        relation = series_model.objects.select_related("series", "m3u_account").filter(id=series_relation_id).first()
+        if relation is None:
+            return _outcome(errors=1, error="series relation no longer exists")
+        if not (relation.custom_properties or {}).get("episodes_fetched"):
+            if dry_run:
+                return out  # loading creates episodes in Dispatcharr: not done in a dry run
+            limiter.wait()
+            try:
+                refresh_series_episodes(relation.m3u_account, relation.series, relation.external_series_id)
+            except Exception as exc:  # noqa: BLE001 - reported, the series is retried on a later pass
+                return _outcome(errors=1, error=f"could not load the episodes: {type(exc).__name__}: {exc}")
+            out["loaded"] = 1
+
+        seasons = {}
+        for rid, season, properties in (
+            episode_model.objects.filter(series_relation_id=series_relation_id)
+            .order_by("episode__season_number", "episode__episode_number")
+            .values_list("id", "episode__season_number", "custom_properties")
+        ):
+            seasons.setdefault(season, []).append((rid, properties))
+
+        for entries in seasons.values():
+            season_plan = plan_season(entries, mode, now, retry_after, max_attempts)
+            representative = season_plan["representative"]
+            representative_props = dict(entries)[representative] if representative is not None else None
+            infer = season_plan["infer"]
+            for rid in season_plan["candidates"]:
+                result = self._probe_relation(episode_model, rid, timeout, limiter, now, logger, dry_run)
+                _add_outcome(out, result)
+                if mode == MODE_FIRST and result["props"] is not None:
+                    representative, representative_props = rid, result["props"]
+                    infer = episodes_to_infer(entries, rid)
+                    break
+            if mode == MODE_FIRST and representative is not None:
+                for rid in infer:
+                    if dry_run or self._write(
+                        episode_model, rid,
+                        lambda current: merge_inferred(current, representative_props, representative, now),
+                    ):
+                        out["inferred"] += 1
+        return out
 
     @staticmethod
     def _write(model, relation_id, merge):
@@ -341,11 +475,14 @@ class Plugin:
     @staticmethod
     def _describe(progress):
         tiers = ", ".join(f"{t} {n}" for t, n in sorted(progress["tiers"].items())) or "none"
-        seconds = progress["processed"] and progress["seconds"] / progress["processed"]
+        probes = progress["probed"] + progress["errors"]
+        seconds = probes and progress["seconds"] / probes
+        head = "Dry run, nothing written." if progress["dry_run"] else "WROTE to the catalogue."
         text = (
-            f"{'Dry run, nothing written.' if progress['dry_run'] else 'WROTE to the catalogue.'} Probed {progress['processed']} of {progress['total']} "
-            f"({progress['available']} due), {progress['errors']} errors, {seconds:.1f}s per probe on average. "
-            f"Tiers: {tiers}."
+            f"{head} Handled {progress['processed']} of {progress['total']} movie/series relations "
+            f"({progress['available']} due): {progress['probed']} probed, {progress['inferred']} episodes "
+            f"{'would be ' if progress['dry_run'] else ''}inferred, {progress['loaded']} series loaded, "
+            f"{progress['errors']} errors, {seconds:.1f}s per probe on average. Tiers measured: {tiers}."
         )
         if progress["error_examples"]:
             text += " Errors: " + "; ".join(progress["error_examples"]) + "."
@@ -394,15 +531,24 @@ class Plugin:
     # --- read-only reports (short, fine inside a request) ---------------------
 
     def _scan(self, settings):
+        now = datetime.now(timezone.utc)
         seconds_per_probe = float(settings.get("seconds_per_probe", 1) or 1)
-        due = Counter(label for label, _ in self._due(settings, datetime.now(timezone.utc)))
-        total = sum(due.values())
-        hours = total * seconds_per_probe / 3600
+        seconds_per_load = float(settings.get("seconds_per_episode_load", 1.5) or 1.5)
+        movies = len(self._movies_due(settings, now))
+        plan = self._series_plan(settings, now)
+        loads = sum(1 for item in plan.values() if item["load"])
+        probes = sum(item["probes"] for item in plan.values())
+        infer = sum(item["infer"] for item in plan.values())
+        total_seconds = (movies + probes) * seconds_per_probe + loads * seconds_per_load
+        mode = "every episode" if self._mode(settings) == "all" else "one episode per season"
         return {
             "status": "ok",
             "message": (
-                f"{total} relations to probe (movies {due['movies']}, episodes {due['episodes']}). "
-                f"At {seconds_per_probe:g}s each and one at a time: about {hours:.1f} h. Nothing was written."
+                f"Movies to probe: {movies}. Series versions with something to do: {len(plan)} "
+                f"({loads} whose episodes must be loaded first, which adds their own probes afterwards). "
+                f"Loaded series: {probes} episode probes ({mode}) and {infer} episodes to receive a copy. "
+                f"Estimated time for what is known now: about {total_seconds / 3600:.1f} h, one probe at a time. "
+                "Nothing was written."
             ),
         }
 
@@ -416,17 +562,33 @@ class Plugin:
             for properties in self._active_relations(model).values_list("custom_properties", flat=True).iterator():
                 buckets[coverage_bucket(properties)] += 1
                 block = (properties or {}).get("probe")
-                if isinstance(block, dict) and block.get("status") == "ok":
+                if isinstance(block, dict) and block.get("status") in ("ok", "inferred"):
                     tiers[block.get("tier", "unknown")] += 1
             total = sum(buckets.values())
-            done = buckets["ok"]
-            pct = f"{100 * done / total:.0f}%" if total else "n/a"
+            answered = buckets["ok"] + buckets["inferred"]
+            pct = f"{100 * answered / total:.0f}%" if total else "n/a"
             tier_text = ", ".join(f"{t} {n}" for t, n in tiers.most_common()) or "none yet"
             parts.append(
-                f"{label}: {done}/{total} probed ({pct}), {buckets['error']} in error, "
-                f"{buckets['never']} never probed; tiers: {tier_text}"
+                f"{label}: {answered}/{total} with an answer ({pct}: {buckets['ok']} measured, "
+                f"{buckets['inferred']} inferred), {buckets['error']} in error, {buckets['never']} never probed; "
+                f"tiers: {tier_text}"
             )
         return {"status": "ok", "message": " | ".join(parts)}
+
+
+def _outcome(errors=0, error=None, probed=0, inferred=0, loaded=0, tiers=None, seconds=0.0, props=None):
+    return {
+        "errors": errors, "error": error, "probed": probed, "inferred": inferred, "loaded": loaded,
+        "tiers": dict(tiers or {}), "seconds": seconds, "props": props,
+    }
+
+
+def _add_outcome(total, part):
+    for key in ("errors", "probed", "inferred", "loaded", "seconds"):
+        total[key] += part[key]
+    for tier, count in part["tiers"].items():
+        total["tiers"][tier] = total["tiers"].get(tier, 0) + count
+    total["error"] = total["error"] or part["error"]
 
 
 # Registered at import, like vod-manager's: the click only queues this task on

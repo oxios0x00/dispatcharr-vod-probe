@@ -97,3 +97,35 @@ def test_error_never_carries_the_provider_url():
     block = merge_failure({}, error, NOW)["probe"]
     assert "user123" not in block["error"] and "pass456" not in block["error"]
     assert block["error"] == "<url>: Server returned 400 Bad Request"
+
+
+def test_inferred_copy_is_marked_and_drops_the_episode_duration():
+    from contract import merge_inferred
+
+    source = merge_success({"basic_data": {"a": 1}}, RESULT, NOW)
+    target = merge_inferred({"basic_data": {"b": 2}}, source, 42, NOW)
+    assert target["basic_data"] == {"b": 2}
+    assert target["quality"] == "4K" and target["resolution"] == "3840x1608"
+    block = target["probe"]
+    assert block["status"] == "inferred" and block["inferred_from"] == 42
+    assert "duration_secs" not in block and block["tier"] == "2160p" and block["hdr"] == "dolby_vision"
+    assert "duration_secs" in source["probe"]  # the source is not modified
+
+
+def test_inferred_block_counts_as_done_unless_every_episode_must_be_measured():
+    from contract import merge_inferred
+
+    inferred = merge_inferred({}, merge_success({}, RESULT, NOW), 1, NOW)
+    assert not needs_probe(inferred, NOW)
+    assert needs_probe(inferred, NOW, inferred_due=True)
+    assert coverage_bucket(inferred) == "inferred"
+
+
+def test_needs_inference():
+    from contract import needs_inference
+
+    ok = merge_success({}, RESULT, NOW)
+    assert needs_inference({}) and needs_inference(merge_failure({}, "x", NOW))
+    assert not needs_inference(ok)
+    assert not needs_inference(ok["probe"] and {"probe": {**ok["probe"], "status": "inferred"}})
+    assert needs_inference({"probe": {**ok["probe"], "schema_version": 1}})

@@ -15,11 +15,12 @@ except ImportError:  # imported as a top-level module by the unit tests
     from probe import PROBE_SCHEMA_VERSION, _AD_TITLE_HINTS
 
 PLUGIN_SOURCE = "vod-probe"
-PLUGIN_VERSION = "0.3.0"
+PLUGIN_VERSION = "0.4.0"
 
 STATUS_OK = "ok"
 STATUS_ERROR = "error"
 STATUS_UNREACHABLE = "unreachable"
+STATUS_INFERRED = "inferred"
 
 # probe.tier -> the vocabulary Dispatcharr's own quality_info uses, so any
 # client that already reads quality_info needs no change.
@@ -184,10 +185,12 @@ def merge_failure(existing, error, now, unreachable=None):
     return merged
 
 
-def needs_probe(custom_properties, now, retry_after=timedelta(hours=24), max_attempts=3):
+def needs_probe(custom_properties, now, retry_after=timedelta(hours=24), max_attempts=3, inferred_due=False):
     """Whether a relation is due for a probe: no block yet, a block written
     under an older schema, or a failure old enough to try again (and not yet
-    tried max_attempts times)."""
+    tried max_attempts times). A block copied from a sibling episode
+    (status "inferred") counts as done, unless inferred_due says every
+    episode must be measured individually."""
     block = (custom_properties or {}).get("probe")
     if not isinstance(block, dict):
         return True
@@ -195,15 +198,62 @@ def needs_probe(custom_properties, now, retry_after=timedelta(hours=24), max_att
         return True
     if block.get("status") == STATUS_OK:
         return False
+    if block.get("status") == STATUS_INFERRED:
+        return inferred_due
     if int(block.get("attempts") or 0) >= max_attempts:
         return False
     last = _parse_iso(block.get("probed_at"))
     return last is None or now - last >= retry_after
 
 
+def is_measured(custom_properties):
+    """A current-schema block that comes from a real probe of this relation."""
+    block = (custom_properties or {}).get("probe")
+    return (
+        isinstance(block, dict)
+        and block.get("status") == STATUS_OK
+        and block.get("schema_version") == PROBE_SCHEMA_VERSION
+    )
+
+
+def needs_inference(custom_properties):
+    """Whether an episode still lacks a usable block, so it should receive a
+    copy of its season's measured one: none yet, an old schema, or a failed
+    probe. Measured and already inferred blocks are left alone."""
+    block = (custom_properties or {}).get("probe")
+    if not isinstance(block, dict) or block.get("schema_version") != PROBE_SCHEMA_VERSION:
+        return True
+    return block.get("status") not in (STATUS_OK, STATUS_INFERRED)
+
+
+def merge_inferred(existing, source_properties, source_relation_id, now):
+    """New custom_properties for an episode that is given the result measured
+    on a sibling of the same season and version. The block is a copy marked
+    status "inferred" with inferred_from, minus what belongs to one episode
+    (its duration), so a client can tell measured from deduced."""
+    merged = dict(existing or {})
+    for key in ("quality", "resolution"):
+        if key in (source_properties or {}):
+            merged[key] = source_properties[key]
+    block = {
+        k: v for k, v in dict((source_properties or {}).get("probe") or {}).items()
+        if k not in ("duration_secs", "attempts", "error")
+    }
+    block.update(
+        status=STATUS_INFERRED,
+        inferred_from=source_relation_id,
+        schema_version=PROBE_SCHEMA_VERSION,
+        source={"plugin": PLUGIN_SOURCE, "version": PLUGIN_VERSION},
+    )
+    merged["probe"] = block
+    return merged
+
+
 def coverage_bucket(custom_properties):
-    """One of 'ok', 'error', 'never' for the coverage statistics."""
+    """One of 'ok', 'inferred', 'error', 'never' for the coverage statistics."""
     block = (custom_properties or {}).get("probe")
     if not isinstance(block, dict):
         return "never"
-    return "ok" if block.get("status") == STATUS_OK else "error"
+    if block.get("status") == STATUS_OK:
+        return "ok"
+    return "inferred" if block.get("status") == STATUS_INFERRED else "error"

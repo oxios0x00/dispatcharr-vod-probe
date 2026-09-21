@@ -1,7 +1,7 @@
 {
   "name": "VOD Probe",
-  "version": "0.3.0",
-  "description": "Probes the real quality of each VOD relation with ffprobe in a background task and writes it into the relation's custom_properties, so every tool reading Dispatcharr's API can use it. Dry run by default.",
+  "version": "0.4.0",
+  "description": "Probes the real quality of each VOD relation (movies and every episode of every series version) with ffprobe in a background task and writes it into the relation's custom_properties, so every tool reading Dispatcharr's API can use it. Dry run by default.",
   "author": "oxios0x00",
   "license": "MIT",
   "fields": [
@@ -14,11 +14,11 @@
     },
     {
       "id": "batch_limit",
-      "label": "Relations per run (0 = all due)",
+      "label": "Movie/series relations per run (0 = all due)",
       "type": "number",
       "default": 25,
       "min": 0,
-      "help_text": "A run probes a random sample of this many due relations. Keep it small until the timings are known."
+      "help_text": "A run handles a random sample of this many due movie relations and series versions (a series version is one unit, all its seasons). 0 = everything due: use it for the big first pass, then let small daily runs pick up only what is new."
     },
     {
       "id": "only_relation_ids",
@@ -26,6 +26,30 @@
       "type": "string",
       "default": "",
       "help_text": "Comma-separated. When set, Probe Run probes exactly these relations, even if already probed. Leave empty for the normal selection."
+    },
+    {
+      "id": "only_series_relation_ids",
+      "label": "Only these series relation ids",
+      "type": "string",
+      "default": "",
+      "help_text": "Comma-separated series relation ids (one per version of a series). When set, Probe Run handles exactly these, and no movies. Leave empty for the normal selection."
+    },
+    {
+      "id": "episode_probing",
+      "label": "Episodes: what to probe",
+      "type": "select",
+      "default": "first_of_season",
+      "options": [
+        {
+          "value": "first_of_season",
+          "label": "One episode per season, copied to the others (recommended)"
+        },
+        {
+          "value": "all",
+          "label": "Every episode individually"
+        }
+      ],
+      "help_text": "Either way, every episode ends up with quality info. With one episode per season, the others get a copy of its result marked status 'inferred' (with inferred_from), and each version of a series (standard, 4K...) is sampled on its own. Cost, measured on a small sample: about 1.2 s per probe. Roughly 1.3 seasons and 9 episodes per series version, so a catalogue of 900 series versions is about 1,200 probes (around 25 minutes) against about 8,000 (around 3 hours) for every episode. Loading the episodes first is needed in both cases: one provider request per series version, roughly 5 to 20 minutes for 900."
     },
     {
       "id": "max_concurrent_probes",
@@ -82,13 +106,21 @@
       "default": 25,
       "min": 5,
       "help_text": "ffprobe gives up after this delay."
+    },
+    {
+      "id": "seconds_per_episode_load",
+      "label": "Estimated seconds per episode load",
+      "type": "number",
+      "default": 1.5,
+      "min": 0.1,
+      "help_text": "Only used by Scan to estimate the duration."
     }
   ],
   "actions": [
     {
       "id": "probe_run",
       "label": "Probe Run",
-      "description": "Starts a background run that probes a random sample of due relations (or the ids listed in the settings). With Dry run on it writes nothing. The click returns at once; follow it with Run Status.",
+      "description": "Starts a background run that probes due movie relations and loads and probes series versions (see Episodes setting). With Dry run on it writes nothing and loads no episodes. The click returns at once; follow it with Run Status.",
       "button_label": "Run",
       "button_variant": "filled",
       "button_color": "green"
