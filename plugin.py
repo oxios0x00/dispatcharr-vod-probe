@@ -63,7 +63,7 @@ class _RateLimiter:
 
 class Plugin:
     name = "VOD Probe"
-    version = "0.8.1"
+    version = "0.9.0"
     description = (
         "Probes the real quality of each VOD relation with ffprobe and writes it "
         "into the relation's custom_properties, so every tool reading "
@@ -75,6 +75,11 @@ class Plugin:
     SCHEDULED_TASK_CELERY_NAME = "vod_probe.run"
     SCHEDULE_TASK_NAME = "vod_probe.auto_run"
     _BACKGROUND_ACTIONS = {"probe_run", "reload_incomplete"}
+    # Reports read every relation's JSON, so they also run in the background, with
+    # no lock and no pause check: they change nothing but a few flags. The result
+    # goes to the notification centre and to Run Status.
+    _REPORT_ACTIONS = {"scan": "Scan", "coverage": "Coverage Stats", "retry_errors": "Retry Errors"}
+    _REPORT_KEY_PREFIX = "vod-probe-report-"
     _LOCK = "probe_run"
     # A run renews its lock after every relation; a lock silent this long
     # belongs to a run that died with its worker.
@@ -100,6 +105,10 @@ class Plugin:
                 return self._probe_run(settings, scheduled=bool(context.get("scheduled")))
             if action_id == "reload_incomplete":
                 return self._reload_incomplete(settings)
+            if action_id in self._REPORT_ACTIONS:
+                if not context.get("background"):
+                    return self._start_report(action_id, settings)
+                return self._run_report(action_id, settings)
             if action_id == "run_status":
                 return self._run_status()
             if action_id == "pause":
@@ -116,12 +125,6 @@ class Plugin:
                 return self._schedule_status()
             if action_id == "test_fire_schedule":
                 return self._test_fire_schedule(settings)
-            if action_id == "retry_errors":
-                return self._retry_errors()
-            if action_id == "scan":
-                return self._scan(settings)
-            if action_id == "coverage":
-                return self._coverage()
             return {"status": "error", "message": f"Unknown action '{action_id}'"}
         finally:
             _release_db_connections()
@@ -151,6 +154,28 @@ class Plugin:
             "status": "ok",
             "message": f"{name} started in the background. Follow it with Run Status, stop it with Pause.",
         }
+
+    def _start_report(self, action_id, settings):
+        task_fn = globals().get("_vod_probe_task")
+        if task_fn is None:
+            return {"status": "error", "message": "Background task failed to register at plugin load — check server logs."}
+        try:
+            task_fn.apply_async(
+                kwargs={"action": action_id, "settings": dict(settings or {}), "scheduled": False}, queue="dvr"
+            )
+        except Exception as exc:  # noqa: BLE001 - reported to the user
+            return {"status": "error", "message": f"Failed to queue the report: {exc}"}
+        return {
+            "status": "ok",
+            "message": f"{self._REPORT_ACTIONS[action_id]} started in the background. The result appears in the notification centre and in Run Status.",
+        }
+
+    def _run_report(self, action_id, settings):
+        handler = {"scan": lambda: self._scan(settings), "coverage": self._coverage, "retry_errors": self._retry_errors}[action_id]
+        result = handler()
+        self.state.set("report", {"action": action_id, "at": time.time(), "message": result["message"]})
+        self._notify(result["message"], False, title=f"VOD Probe: {self._REPORT_ACTIONS[action_id]}", prefix=f"{self._REPORT_KEY_PREFIX}{action_id}-")
+        return result
 
     def _busy_message(self, held_since):
         elapsed = int(time.time() - held_since)
@@ -655,6 +680,14 @@ class Plugin:
         return text
 
     def _run_status(self):
+        result = self._run_progress()
+        report = self.state.get("report")
+        if report:
+            when = datetime.fromtimestamp(report["at"]).strftime("%Y-%m-%d %H:%M")
+            result["message"] += f" | Last report, {self._REPORT_ACTIONS.get(report['action'], report['action'])} ({when}): {report['message']}"
+        return result
+
+    def _run_progress(self):
         progress = self.state.get("run")
         held_since = self.state.lock_held_since(self._LOCK, self._LOCK_STALE_SECONDS)
         paused = " [PAUSED]" if self.state.is_paused() else ""
@@ -670,20 +703,21 @@ class Plugin:
             }
         return {"status": "ok", "message": f"Last run{paused}: {self._describe(progress)}"}
 
-    def _notify(self, message, stopped):
+    def _notify(self, message, stopped, title=None, prefix=None):
         import logging
 
         try:
             from core.models import SystemNotification
             from core.utils import send_websocket_notification
 
-            SystemNotification.objects.filter(notification_key__startswith=self._NOTIFICATION_KEY_PREFIX).delete()
+            prefix = prefix or self._NOTIFICATION_KEY_PREFIX
+            SystemNotification.objects.filter(notification_key__startswith=prefix).delete()
             kind = SystemNotification.NotificationType
             notification = SystemNotification.objects.create(
-                notification_key=f"{self._NOTIFICATION_KEY_PREFIX}{int(time.time())}",
+                notification_key=f"{prefix}{int(time.time())}",
                 notification_type=kind.WARNING if stopped else kind.INFO,
                 priority=SystemNotification.Priority.HIGH,
-                title=f"VOD Probe: run {'stopped' if stopped else 'done'}",
+                title=title or f"VOD Probe: run {'stopped' if stopped else 'done'}",
                 message=message,
                 is_active=True,
                 admin_only=True,
@@ -878,13 +912,14 @@ try:
         result = Plugin().run(action, {}, {"settings": settings or {}, "background": True, "scheduled": scheduled})
         if result.get("status") == "error":
             logger.error("Background action '%s' failed: %s", action, result.get("message"))
-        try:
-            from django.utils import timezone
-            from django_celery_beat.models import PeriodicTask
+        if scheduled:
+            try:
+                from django.utils import timezone
+                from django_celery_beat.models import PeriodicTask
 
-            PeriodicTask.objects.filter(name=Plugin.SCHEDULE_TASK_NAME).update(last_run_at=timezone.now())
-        except Exception as exc:  # noqa: BLE001 - only bookkeeping
-            logger.warning("Could not update the schedule's last run time: %s", exc)
+                PeriodicTask.objects.filter(name=Plugin.SCHEDULE_TASK_NAME).update(last_run_at=timezone.now())
+            except Exception as exc:  # noqa: BLE001 - only bookkeeping
+                logger.warning("Could not update the schedule's last run time: %s", exc)
         return result
 except Exception as _celery_register_err:  # pragma: no cover - environment-dependent
     import logging

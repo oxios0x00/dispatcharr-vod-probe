@@ -158,7 +158,7 @@ Keep **Dry run** on for the first steps.
 | **Coverage Stats** | How many relations have an answer, split into measured and inferred, with the tiers found. |
 | **[SCHEDULE] Apply / Remove / Status / Test Fire Now** | Manage the periodic run. |
 
-A notification is sent to Dispatcharr's notification centre when a run ends.
+**Scan**, **Coverage Stats**, **Retry Errors** and **Reload Incomplete Series** also run in the background, because they read every relation. The click returns at once; the result of Scan, Coverage Stats and Retry Errors appears in Dispatcharr's notification centre and at the end of **Run Status**. A notification is also sent when a run ends.
 
 ## Scheduling
 
@@ -212,7 +212,7 @@ Each probe is a real stream connection, and each series version costs one metada
 
 ## Status
 
-Version 0.8.1. Tested on a Dispatcharr test instance with a single Xtream Codes provider, on both movies and series, including a full first pass, disabling and re-enabling groups, failed probes and retries. Not tested on a production instance, with several providers, or with a concurrency above 1. The scheduled trigger itself (the timer firing on its own) has not been observed yet; **Test Fire Now** exercises the same code path.
+Version 0.9.0. Tested on a Dispatcharr test instance with a single Xtream Codes provider, on both movies and series, including a full first pass, disabling and re-enabling groups, failed probes and retries. Not tested on a production instance, with several providers, or with a concurrency above 1. The scheduled trigger itself (the timer firing on its own) has not been observed yet; **Test Fire Now** exercises the same code path.
 
 ## Development
 

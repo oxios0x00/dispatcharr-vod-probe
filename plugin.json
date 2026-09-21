@@ -1,6 +1,6 @@
 {
   "name": "VOD Probe",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "description": "Probes the real quality of each VOD relation (movies and every episode of every series version) with ffprobe in a background task and writes it into the relation's custom_properties, so every tool reading Dispatcharr's API can use it. Dry run by default.",
   "author": "oxios0x00",
   "license": "MIT",
@@ -130,7 +130,7 @@
     {
       "id": "retry_errors",
       "label": "Retry Errors",
-      "description": "A failed probe is never retried on its own. This flags every failed relation (and series version left pending) so the next run, scheduled or manual, tries them again.",
+      "description": "A failed probe is never retried on its own. This flags every failed relation (and the series of a failed episode, and series versions left pending) so the next run, scheduled or manual, tries them again. Runs in the background; the result appears in the notification centre and in Run Status.",
       "button_label": "Retry",
       "button_variant": "outline",
       "button_color": "orange"
@@ -162,7 +162,7 @@
     {
       "id": "scan",
       "label": "Scan",
-      "description": "Counts the relations due for a probe and estimates the duration. Writes nothing.",
+      "description": "Counts the relations due for a probe and why. Runs in the background; the result appears in the notification centre and in Run Status. Writes nothing.",
       "button_label": "Scan",
       "button_variant": "outline",
       "button_color": "blue"
@@ -170,7 +170,7 @@
     {
       "id": "coverage",
       "label": "Coverage Stats",
-      "description": "Share of relations already probed, per type, with the quality tiers found.",
+      "description": "Share of relations already probed, split into measured and inferred, with the tiers found. Runs in the background; the result appears in the notification centre and in Run Status.",
       "button_label": "Stats",
       "button_variant": "outline",
       "button_color": "blue"
