@@ -135,7 +135,7 @@ Keep **Dry run** on for the first steps.
 | --- | --- | --- |
 | Dry run | on | Probe for real but write nothing, and load no episode lists. |
 | Relations per run | 25 | A run handles a random sample of this many due movie relations and series versions (one series version counts as one, all its seasons included). `0` means everything due. |
-| Only these movie relation ids / series relation ids | empty | Comma-separated. When set, a run handles exactly these and nothing else. Handy to redo one title. |
+| Only these movie relation ids / series relation ids | empty | Comma-separated. When set, a run handles exactly these and nothing else, and probes them again even if they are already done. Handy to redo one title. |
 | Episodes: what to probe | one per series version | See [Series](#series). |
 | Max concurrent probes | 1 | Each probe opens a real connection to your provider. Stay below its connection limit. |
 | Max probes started per second | 2 | Caps the rate independently of the concurrency. `0` means no limit. |
@@ -212,7 +212,7 @@ Each probe is a real stream connection, and each series version costs one metada
 
 ## Status
 
-Version 0.8.0. Tested on a Dispatcharr test instance with a single Xtream Codes provider, on both movies and series, including a full first pass, disabling and re-enabling groups, failed probes and retries. Not tested on a production instance, with several providers, or with a concurrency above 1. The scheduled trigger itself (the timer firing on its own) has not been observed yet; **Test Fire Now** exercises the same code path.
+Version 0.8.1. Tested on a Dispatcharr test instance with a single Xtream Codes provider, on both movies and series, including a full first pass, disabling and re-enabling groups, failed probes and retries. Not tested on a production instance, with several providers, or with a concurrency above 1. The scheduled trigger itself (the timer firing on its own) has not been observed yet; **Test Fire Now** exercises the same code path.
 
 ## Development
 

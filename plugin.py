@@ -63,7 +63,7 @@ class _RateLimiter:
 
 class Plugin:
     name = "VOD Probe"
-    version = "0.8.0"
+    version = "0.8.1"
     description = (
         "Probes the real quality of each VOD relation with ffprobe and writes it "
         "into the relation's custom_properties, so every tool reading "
@@ -204,6 +204,16 @@ class Plugin:
             return {"status": "error", "message": f"django-celery-beat not available ({exc}); scheduling requires it."}
         minute, hour, dom, month, dow = fields
         try:
+            # Celery parses the fields when it builds the schedule: a value such as
+            # "99 99 * * *" would otherwise be saved and only fail later, in Beat.
+            from celery.schedules import crontab
+
+            crontab(minute=minute, hour=hour, day_of_month=dom, month_of_year=month, day_of_week=dow)
+        except ImportError:
+            pass  # let CrontabSchedule validate it
+        except Exception as exc:  # noqa: BLE001 - reported to the user
+            return {"status": "error", "message": f"Invalid cron expression {cron_expr!r}: {exc}"}
+        try:
             schedule, _ = CrontabSchedule.objects.get_or_create(
                 minute=minute, hour=hour, day_of_month=dom, month_of_year=month, day_of_week=dow, timezone=tz_str,
             )
@@ -256,6 +266,8 @@ class Plugin:
         }
 
     def _test_fire_schedule(self, settings):
+        if self.state.is_paused():
+            return {"status": "error", "message": "Paused: use Resume first."}
         held_since = self.state.lock_held_since(self._LOCK, self._LOCK_STALE_SECONDS)
         if held_since:
             return self._busy_message(held_since)
@@ -355,7 +367,7 @@ class Plugin:
         return due
 
     def _units(self, settings):
-        """[("movies", id) | ("series", id)]: what a run has to do. With
+        """[("movies" | "series", id, forced)]: what a run has to do. With
         only_relation_ids (movies) or only_series_relation_ids (series
         versions) set, only those, and nothing else."""
         only_movies = str(settings.get("only_relation_ids") or "").strip()
@@ -363,13 +375,16 @@ class Plugin:
             int(x) for x in str(settings.get("only_series_relation_ids") or "").replace(" ", "").split(",") if x.isdigit()
         ]
         if only_movies or only_series:
-            units = [("movies", rid) for rid in self._movies_due(settings)] if only_movies else []
+            units = [("movies", rid, False) for rid in self._movies_due(settings)] if only_movies else []
             if only_series:
-                plan = self._series_due(settings)
-                units += [("series", srid) for srid in only_series if srid in plan]
+                # Forced, like the movie ids: probed again even if already done.
+                known = set(
+                    self._active_relations(self._series_model()).filter(id__in=only_series).values_list("id", flat=True)
+                )
+                units += [("series", srid, True) for srid in dict.fromkeys(only_series) if srid in known]
             return units
-        units = [("movies", rid) for rid in self._movies_due(settings)]
-        return units + [("series", srid) for srid in self._series_due(settings)]
+        units = [("movies", rid, False) for rid in self._movies_due(settings)]
+        return units + [("series", srid, False) for srid in self._series_due(settings)]
 
     # --- the run ------------------------------------------------------------
 
@@ -377,6 +392,10 @@ class Plugin:
         import logging
 
         logger = logging.getLogger("vod_probe")
+        if self.state.is_paused():
+            # A scheduled run does not go through the button's own check.
+            logger.info("Probe Run not started: the plugin is paused.")
+            return {"status": "ok", "message": "Paused: nothing was run. Use Resume."}
         acquired, held_since = self.state.try_acquire_lock(self._LOCK, self._LOCK_STALE_SECONDS)
         if not acquired:
             return self._busy_message(held_since)
@@ -415,8 +434,8 @@ class Plugin:
 
         with ThreadPoolExecutor(max_workers=max_concurrent) as pool:
             futures = {
-                pool.submit(self._run_unit, kind, uid, settings, timeout, limiter, now, logger, dry_run): (kind, uid)
-                for kind, uid in units
+                pool.submit(self._run_unit, kind, uid, settings, timeout, limiter, now, logger, dry_run, force): (kind, uid)
+                for kind, uid, force in units
             }
             for future in as_completed(futures):
                 if future.cancelled():
@@ -457,25 +476,25 @@ class Plugin:
         self._notify(message, stopped)
         return {"status": "ok", "message": message}
 
-    def _run_unit(self, kind, unit_id, settings, timeout, limiter, now, logger, dry_run):
+    def _run_unit(self, kind, unit_id, settings, timeout, limiter, now, logger, dry_run, force=False):
         """One movie relation or one series relation. One retry on the
         transient gevent scheduling error seen in vod-manager ("This
         operation would block forever")."""
         try:
             try:
-                return self._run_unit_once(kind, unit_id, settings, timeout, limiter, now, logger, dry_run)
+                return self._run_unit_once(kind, unit_id, settings, timeout, limiter, now, logger, dry_run, force)
             except Exception as exc:
                 if "would block forever" not in str(exc):
                     raise
-                return self._run_unit_once(kind, unit_id, settings, timeout, limiter, now, logger, dry_run)
+                return self._run_unit_once(kind, unit_id, settings, timeout, limiter, now, logger, dry_run, force)
         finally:
             _release_db_connections()
 
-    def _run_unit_once(self, kind, unit_id, settings, timeout, limiter, now, logger, dry_run):
+    def _run_unit_once(self, kind, unit_id, settings, timeout, limiter, now, logger, dry_run, force=False):
         if kind == "movies":
             _, model = self._relation_models()[0]
             return self._probe_relation(model, unit_id, timeout, limiter, now, logger, dry_run)
-        return self._run_series(unit_id, settings, timeout, limiter, now, logger, dry_run)
+        return self._run_series(unit_id, settings, timeout, limiter, now, logger, dry_run, force)
 
     def _probe_relation(self, model, relation_id, timeout, limiter, now, logger, dry_run):
         """Probe one relation and, unless dry_run, write the result. Returns an
@@ -509,7 +528,7 @@ class Plugin:
             self._write(model, relation_id, lambda current: merge_success(current, result, now))
         return _outcome(probed=1, tiers={merged["probe"]["tier"]: 1}, seconds=seconds, props=merged, retried=was_retry)
 
-    def _run_series(self, series_relation_id, settings, timeout, limiter, now, logger, dry_run):
+    def _run_series(self, series_relation_id, settings, timeout, limiter, now, logger, dry_run, force=False):
         """One version of a series: load its episodes if Dispatcharr has not or
         if the provider's last_modified moved, probe the episodes the plan asks
         for, copy the measured result to the others, and write the summary on
@@ -530,7 +549,9 @@ class Plugin:
         episode_count = episode_model.objects.filter(series_relation_id=series_relation_id).count()
         work = series_work(relation.custom_properties, episode_count, mode, relation.last_episode_refresh)
         if work is None:
-            return out
+            if not force:
+                return out
+            work = {"reason": "forced", "reload": False}  # asked for by id: probed again even if done
         if work["reload"]:
             if dry_run:
                 return out  # loading creates or removes episodes in Dispatcharr: not done in a dry run
@@ -553,6 +574,8 @@ class Plugin:
         first_sample = None
         groups = split_groups(rows, mode)
         for entries in groups:
+            if force:  # ignore what was written before, so the sample is probed again
+                entries = [(rid, {k: v for k, v in (cp or {}).items() if k != "probe"}) for rid, cp in entries]
             group_plan = plan_series(entries, mode)
             representative = group_plan["representative"]
             representative_props = dict(entries)[representative] if representative is not None else None
@@ -776,18 +799,26 @@ class Plugin:
 
     def _retry_errors(self):
         """Flag the failed relations so the next run (scheduled or manual) tries
-        them again. A failure is never retried on its own."""
-        from .contract import flag_retry
+        them again. A failure is never retried on its own. A failed episode is
+        retried by visiting its series, so its series relation is flagged too."""
+        from .contract import flag_retry, flag_series_retry
 
         counts = Counter()
+        series_to_visit = set()
         for label, model in self._relation_models():
             failed = model.objects.filter(custom_properties__probe__status__in=["error", "unreachable"])
-            for rid in list(failed.values_list("id", flat=True)):
+            if label == "episodes":
+                rows = list(failed.values_list("id", "series_relation_id"))
+                series_to_visit.update(srid for _, srid in rows if srid)
+            else:
+                rows = [(rid, None) for rid in failed.values_list("id", flat=True)]
+            for rid, _ in rows:
                 if self._write(model, rid, flag_retry):
                     counts[label] += 1
-        pending = self._series_model().objects.filter(custom_properties__probe__status="pending")
-        for rid in list(pending.values_list("id", flat=True)):
-            if self._write(self._series_model(), rid, flag_retry):
+        series_model = self._series_model()
+        series_to_visit.update(series_model.objects.filter(custom_properties__probe__status="pending").values_list("id", flat=True))
+        for rid in series_to_visit:
+            if self._write(series_model, rid, flag_series_retry):
                 counts["series versions"] += 1
         if not counts:
             return {"status": "ok", "message": "Nothing failed, nothing to retry."}

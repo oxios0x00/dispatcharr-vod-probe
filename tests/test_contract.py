@@ -234,3 +234,27 @@ def test_flag_reload_makes_the_next_run_ask_the_provider_again():
     assert series_work(flagged, 8, "first_of_series") == {"reason": "incomplete", "reload": True}
     assert series_work(flag_reload(fetched, NOW), 8, "first_of_series") == {"reason": "incomplete", "reload": True}
     assert "reload" not in series_marker(flagged, 5, 20, 1, "first_of_series", 99, NOW)["probe"]  # a new summary clears it
+
+
+def test_an_all_mode_series_with_failed_episodes_is_pending_not_ok():
+    from contract import series_marker, series_work
+
+    fetched = {"episodes_fetched": True, "basic_data": {"last_modified": "5"}}
+    failed = series_marker(fetched, 5, 40, 3, "all", None, NOW)["probe"]   # _run_series passes no sample when an episode failed
+    assert failed["status"] == "pending" and failed["attempts"] == 1
+    done = series_marker(fetched, 5, 40, 3, "all", 7, NOW)["probe"]
+    assert done["status"] == "ok" and "attempts" not in done
+    assert series_work({**fetched, "probe": failed}, 40, "all") is None  # left alone until Retry Errors
+
+
+def test_a_failed_episode_makes_its_series_visited_again():
+    from contract import flag_series_retry, series_marker, series_work
+
+    fetched = {"episodes_fetched": True, "basic_data": {"last_modified": "5"}}
+    done = series_marker(fetched, 5, 40, 3, "all", 7, NOW)
+    assert series_work(done, 40, "all") is None
+    flagged = flag_series_retry(done)
+    assert flagged["probe"]["retry"] is True and "retry" not in done["probe"]
+    assert series_work(flagged, 40, "all") == {"reason": "retry", "reload": False}
+    assert "retry" not in series_marker(flagged, 5, 40, 3, "all", 7, NOW)["probe"]  # visiting the series clears it
+    assert flag_series_retry(fetched) == fetched  # no summary: it is processed anyway

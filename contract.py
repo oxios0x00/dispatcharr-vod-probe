@@ -15,7 +15,7 @@ except ImportError:  # imported as a top-level module by the unit tests
     from probe import PROBE_SCHEMA_VERSION, _AD_TITLE_HINTS
 
 PLUGIN_SOURCE = "vod-probe"
-PLUGIN_VERSION = "0.8.0"
+PLUGIN_VERSION = "0.8.1"
 
 STATUS_OK = "ok"
 STATUS_ERROR = "error"
@@ -269,7 +269,7 @@ def series_marker(existing, last_modified, episodes, seasons, mode, sampled_from
     stays so until Retry Errors flags it."""
     merged = dict(existing or {})
     previous = merged.get("probe") if isinstance(merged.get("probe"), dict) else {}
-    complete = episodes > 0 and sampled_from is not None or (mode == "all" and episodes > 0)
+    complete = episodes > 0 and sampled_from is not None
     marker = {
         "schema_version": PROBE_SCHEMA_VERSION,
         "status": STATUS_OK if complete else "pending",
@@ -290,6 +290,18 @@ def series_marker(existing, last_modified, episodes, seasons, mode, sampled_from
 
 # How thorough each way of sampling is: moving to a higher one redoes a series, a lower one leaves it.
 _MODE_RANK = {"first_of_series": 0, "first_of_season": 1, "all": 2}
+
+
+def flag_series_retry(custom_properties):
+    """custom_properties of a series relation whose summary is marked so that
+    the next run visits it again, whatever its status: one of its episodes
+    failed, and only a visit to the series can retry it. A series without a
+    summary needs no flag, it is processed anyway."""
+    merged = dict(custom_properties or {})
+    marker = merged.get("probe")
+    if isinstance(marker, dict):
+        merged["probe"] = {**marker, "retry": True}
+    return merged
 
 
 def flag_reload(custom_properties, now):
@@ -321,7 +333,7 @@ def series_work(custom_properties, episode_count, mode, last_episode_refresh=Non
     marker = properties.get("probe") if isinstance(properties.get("probe"), dict) else None
     if marker and marker.get("reload"):
         return {"reason": "incomplete", "reload": True}
-    if marker and marker.get("status") not in (None, STATUS_OK) and marker.get("retry"):
+    if marker and marker.get("retry"):
         return {"reason": "retry", "reload": episode_count == 0}
     if episode_count == 0:
         attempts = int(marker.get("attempts") or 0) if marker else 0
