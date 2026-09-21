@@ -1,6 +1,6 @@
 {
   "name": "VOD Probe",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "Probes the real quality of each VOD relation (movies and every episode of every series version) with ffprobe in a background task and writes it into the relation's custom_properties, so every tool reading Dispatcharr's API can use it. Dry run by default.",
   "author": "oxios0x00",
   "license": "MIT",
@@ -77,7 +77,7 @@
       "type": "number",
       "default": 0.8,
       "min": 0,
-      "help_text": "Checked after 5 probes. The run pauses itself instead of hammering a failing provider."
+      "help_text": "Checked after 5 probes. The run pauses itself instead of hammering a failing provider. Probes retried after Retry Errors (or the switch) are not counted: they are known dead links."
     },
     {
       "id": "retry_errors_next_schedule",

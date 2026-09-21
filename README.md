@@ -6,7 +6,7 @@ It only writes `quality`, `resolution` and a `probe` block. It never deletes, me
 
 ## Status
 
-Version 0.7.1, tested on a Dispatcharr test instance only: about 630 movies and 450 series versions so far; the full catalogue pass is not finished.
+Version 0.7.2, tested on a Dispatcharr test instance only: about 630 movies and 450 series versions so far; the full catalogue pass is not finished.
 
 Actions:
 

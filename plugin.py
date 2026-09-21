@@ -63,7 +63,7 @@ class _RateLimiter:
 
 class Plugin:
     name = "VOD Probe"
-    version = "0.7.1"
+    version = "0.7.2"
     description = (
         "Probes the real quality of each VOD relation with ffprobe and writes it "
         "into the relation's custom_properties, so every tool reading "
@@ -385,6 +385,8 @@ class Plugin:
             self.state.release_lock(self._LOCK)
 
     def _run_pass(self, settings, logger):
+        from .breaker import tripped as breaker_tripped
+
         limit = int(settings.get("batch_limit", 25) or 0)
         max_concurrent = max(1, int(settings.get("max_concurrent_probes", 1) or 1))
         limiter = _RateLimiter(float(settings.get("max_probes_per_second", 2) or 0))
@@ -401,7 +403,7 @@ class Plugin:
             units = random.sample(units, limit)
         progress = {
             "started": time.time(), "finished": None, "dry_run": dry_run, "available": available,
-            "total": len(units), "processed": 0, "errors": 0, "probed": 0, "inferred": 0, "loaded": 0,
+            "total": len(units), "processed": 0, "errors": 0, "probed": 0, "inferred": 0, "loaded": 0, "retried": 0, "retried_errors": 0,
             "tiers": {}, "error_examples": [], "seconds": 0.0, "note": "",
         }
         self.state.set("run", progress)
@@ -422,7 +424,7 @@ class Plugin:
                 except Exception as exc:  # noqa: BLE001 - counted, never fatal for the pass
                     outcome = _outcome(errors=1, error=f"{type(exc).__name__}: {exc}")
                 progress["processed"] += 1
-                for key in ("errors", "probed", "inferred", "loaded"):
+                for key in ("errors", "probed", "inferred", "loaded", "retried", "retried_errors"):
                     progress[key] += outcome[key]
                 progress["seconds"] += outcome["seconds"]
                 tiers.update(outcome["tiers"])
@@ -432,8 +434,9 @@ class Plugin:
                 self.state.set("run", progress)
                 self.state.renew_lock(self._LOCK)
 
-                attempts = progress["probed"] + progress["errors"]
-                tripped = attempts >= 5 and progress["errors"] / attempts > breaker_ratio
+                tripped = breaker_tripped(
+                    progress["probed"], progress["errors"], progress["retried"], progress["retried_errors"], breaker_ratio
+                )
                 if (self.state.is_paused() or tripped) and not stopped:
                     stopped = True
                     if tripped:
@@ -483,6 +486,7 @@ class Plugin:
         url = relation.get_stream_url()
         if not url:
             return _outcome(errors=1, error="no stream URL")
+        was_retry = 1 if ((relation.custom_properties or {}).get("probe") or {}).get("retry") else 0
         limiter.wait()
         started = time.monotonic()
         result = probe_stream(url, timeout_seconds=timeout)
@@ -494,13 +498,13 @@ class Plugin:
                         json.dumps({"probe": failed["probe"]}, ensure_ascii=False))
             if not dry_run:
                 self._write(model, relation_id, lambda current: merge_failure(current, result.get("error"), now))
-            return _outcome(errors=1, error=failed["probe"]["error"], seconds=seconds)
+            return _outcome(errors=1, error=failed["probe"]["error"], seconds=seconds, retried=was_retry, retried_errors=was_retry)
         merged = merge_success(relation.custom_properties, result, now)
         logger.info("vod-probe, relation %s %s: %s", relation_id, verb, json.dumps(
             {k: merged[k] for k in ("quality", "resolution", "probe") if k in merged}, ensure_ascii=False))
         if not dry_run:
             self._write(model, relation_id, lambda current: merge_success(current, result, now))
-        return _outcome(probed=1, tiers={merged["probe"]["tier"]: 1}, seconds=seconds, props=merged)
+        return _outcome(probed=1, tiers={merged["probe"]["tier"]: 1}, seconds=seconds, props=merged, retried=was_retry)
 
     def _run_series(self, series_relation_id, settings, timeout, limiter, now, logger, dry_run):
         """One version of a series: load its episodes if Dispatcharr has not or
@@ -613,6 +617,11 @@ class Plugin:
             f"{'would be ' if progress['dry_run'] else ''}inferred, {progress['loaded']} series loaded, "
             f"{progress['errors']} errors, {seconds:.1f}s per probe on average. Tiers measured: {tiers}."
         )
+        if progress.get("retried"):
+            text += (
+                f" {progress['retried']} were retries of an earlier failure ({progress['retried_errors']} failed again); "
+                "they do not count towards the circuit breaker."
+            )
         if progress["error_examples"]:
             text += " Errors: " + "; ".join(progress["error_examples"]) + "."
         if progress["note"]:
@@ -740,15 +749,16 @@ class Plugin:
         return {"status": "ok", "message": " | ".join(parts)}
 
 
-def _outcome(errors=0, error=None, probed=0, inferred=0, loaded=0, tiers=None, seconds=0.0, props=None):
+def _outcome(errors=0, error=None, probed=0, inferred=0, loaded=0, tiers=None, seconds=0.0, props=None, retried=0, retried_errors=0):
     return {
         "errors": errors, "error": error, "probed": probed, "inferred": inferred, "loaded": loaded,
         "tiers": dict(tiers or {}), "seconds": seconds, "props": props,
+        "retried": retried, "retried_errors": retried_errors,
     }
 
 
 def _add_outcome(total, part):
-    for key in ("errors", "probed", "inferred", "loaded", "seconds"):
+    for key in ("errors", "probed", "inferred", "loaded", "seconds", "retried", "retried_errors"):
         total[key] += part[key]
     for tier, count in part["tiers"].items():
         total["tiers"][tier] = total["tiers"].get(tier, 0) + count
