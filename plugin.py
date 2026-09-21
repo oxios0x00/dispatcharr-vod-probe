@@ -63,7 +63,7 @@ class _RateLimiter:
 
 class Plugin:
     name = "VOD Probe"
-    version = "0.7.0"
+    version = "0.7.1"
     description = (
         "Probes the real quality of each VOD relation with ffprobe and writes it "
         "into the relation's custom_properties, so every tool reading "
@@ -97,7 +97,7 @@ class Plugin:
             if action_id in self._BACKGROUND_ACTIONS and not context.get("background"):
                 return self._start_background(action_id, settings)
             if action_id == "probe_run":
-                return self._probe_run(settings)
+                return self._probe_run(settings, scheduled=bool(context.get("scheduled")))
             if action_id == "run_status":
                 return self._run_status()
             if action_id == "pause":
@@ -370,7 +370,7 @@ class Plugin:
 
     # --- the run ------------------------------------------------------------
 
-    def _probe_run(self, settings):
+    def _probe_run(self, settings, scheduled=False):
         import logging
 
         logger = logging.getLogger("vod_probe")
@@ -378,6 +378,8 @@ class Plugin:
         if not acquired:
             return self._busy_message(held_since)
         try:
+            if scheduled:
+                self._apply_retry_switch(settings, logger)
             return self._run_pass(settings, logger)
         finally:
             self.state.release_lock(self._LOCK)
@@ -674,6 +676,26 @@ class Plugin:
             ),
         }
 
+    def _apply_retry_switch(self, settings, logger):
+        """The "Retry errors at the next scheduled run" switch. It is read live,
+        not from the settings copied when the schedule was applied, so that
+        turning it on needs no new Apply, and it turns itself off once used. A
+        dry run changes nothing, so it leaves the switch on."""
+        from apps.plugins.loader import PluginManager
+        from apps.plugins.models import PluginConfig
+
+        key = os.path.basename(os.path.dirname(os.path.abspath(__file__)))
+        config = PluginConfig.objects.filter(key=key).first()
+        live = dict(config.settings or {}) if config else {}
+        if not live.get("retry_errors_next_schedule"):
+            return
+        if settings.get("dry_run", True):
+            logger.info("Retry errors switch is on; kept for a run that writes (this one is a dry run).")
+            return
+        result = self._retry_errors()
+        logger.info("Retry errors switch: %s", result["message"])
+        PluginManager.get().update_settings(key, {**live, "retry_errors_next_schedule": False})
+
     def _retry_errors(self):
         """Flag the failed relations so the next run (scheduled or manual) tries
         them again. A failure is never retried on its own."""
@@ -743,7 +765,7 @@ try:
         import logging
 
         logger = logging.getLogger("vod_probe")
-        result = Plugin().run(action, {}, {"settings": settings or {}, "background": True})
+        result = Plugin().run(action, {}, {"settings": settings or {}, "background": True, "scheduled": scheduled})
         if result.get("status") == "error":
             logger.error("Background action '%s' failed: %s", action, result.get("message"))
         try:

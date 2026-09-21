@@ -6,13 +6,13 @@ It only writes `quality`, `resolution` and a `probe` block. It never deletes, me
 
 ## Status
 
-Version 0.7.0, tested on a Dispatcharr test instance only: about 630 movies and 450 series versions so far; the full catalogue pass is not finished.
+Version 0.7.1, tested on a Dispatcharr test instance only: about 630 movies and 450 series versions so far; the full catalogue pass is not finished.
 
 Actions:
 
 - **Probe Run** runs in a Celery background task (never inside the HTTP request), probes a random sample of due movie relations and series versions (or the ids listed in the settings) and, with **Dry run** off, writes `quality`, `resolution` and a `probe` block into each relation's `custom_properties`. Dry run is on by default.
 - **Run Status**, **Pause** and **Resume** follow and stop a run; a circuit breaker (error ratio 0.8 by default) pauses it when too many probes fail, and a pause stays until **Resume**.
-- **Retry Errors** flags the failed relations so the next run tries them again: a failed probe is never retried on its own.
+- **Retry Errors** flags the failed relations so the next run tries them again: a failed probe is never retried on its own. The setting **Retry errors at the next scheduled run** does the same for the next scheduled run, then switches itself off.
 - **Scan** counts the relations due for a probe and **Coverage Stats** reports how many are already probed.
 
 Only relations of active accounts in enabled categories are considered. `quality_info` (the field Dispatcharr's API and its source labels already read) then shows the probed quality. The rest of the block is for API clients; see [DESIGN.md](DESIGN.md) for the contract and the open questions.
