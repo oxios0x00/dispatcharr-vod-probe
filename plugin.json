@@ -1,0 +1,137 @@
+{
+  "name": "VOD Probe",
+  "version": "0.3.0",
+  "description": "Probes the real quality of each VOD relation with ffprobe in a background task and writes it into the relation's custom_properties, so every tool reading Dispatcharr's API can use it. Dry run by default.",
+  "author": "oxios0x00",
+  "license": "MIT",
+  "fields": [
+    {
+      "id": "dry_run",
+      "label": "Dry run (probe, but write nothing)",
+      "type": "boolean",
+      "default": true,
+      "help_text": "ON (default): probes for real and reports what would be written. OFF: writes quality, resolution and probe into each probed relation's custom_properties."
+    },
+    {
+      "id": "batch_limit",
+      "label": "Relations per run (0 = all due)",
+      "type": "number",
+      "default": 25,
+      "min": 0,
+      "help_text": "A run probes a random sample of this many due relations. Keep it small until the timings are known."
+    },
+    {
+      "id": "only_relation_ids",
+      "label": "Only these movie relation ids",
+      "type": "string",
+      "default": "",
+      "help_text": "Comma-separated. When set, Probe Run probes exactly these relations, even if already probed. Leave empty for the normal selection."
+    },
+    {
+      "id": "max_concurrent_probes",
+      "label": "Max concurrent probes",
+      "type": "number",
+      "default": 1,
+      "min": 1,
+      "help_text": "Probing uses a real stream connection: stay below the provider's connection limit."
+    },
+    {
+      "id": "max_probes_per_second",
+      "label": "Max probes started per second",
+      "type": "number",
+      "default": 2,
+      "min": 0,
+      "help_text": "0 = no limit."
+    },
+    {
+      "id": "circuit_breaker_error_ratio",
+      "label": "Stop when the error ratio exceeds",
+      "type": "number",
+      "default": 0.5,
+      "min": 0,
+      "help_text": "Checked after 5 probes. The run pauses itself instead of hammering a failing provider."
+    },
+    {
+      "id": "seconds_per_probe",
+      "label": "Estimated seconds per probe",
+      "type": "number",
+      "default": 1,
+      "min": 0.1,
+      "help_text": "Only used by Scan to estimate how long a full pass would take."
+    },
+    {
+      "id": "retry_after_hours",
+      "label": "Retry failed probes after (hours)",
+      "type": "number",
+      "default": 24,
+      "min": 1,
+      "help_text": "A relation whose probe failed is offered again by Scan only after this delay."
+    },
+    {
+      "id": "max_attempts",
+      "label": "Max attempts per relation",
+      "type": "number",
+      "default": 3,
+      "min": 1,
+      "help_text": "After this many failures a relation is left alone until Retry Errors is used."
+    },
+    {
+      "id": "probe_timeout_seconds",
+      "label": "Probe timeout (seconds)",
+      "type": "number",
+      "default": 25,
+      "min": 5,
+      "help_text": "ffprobe gives up after this delay."
+    }
+  ],
+  "actions": [
+    {
+      "id": "probe_run",
+      "label": "Probe Run",
+      "description": "Starts a background run that probes a random sample of due relations (or the ids listed in the settings). With Dry run on it writes nothing. The click returns at once; follow it with Run Status.",
+      "button_label": "Run",
+      "button_variant": "filled",
+      "button_color": "green"
+    },
+    {
+      "id": "run_status",
+      "label": "Run Status",
+      "description": "Whether a run is going, its progress, or the result of the last one.",
+      "button_label": "Status",
+      "button_variant": "outline",
+      "button_color": "blue"
+    },
+    {
+      "id": "pause",
+      "label": "Pause",
+      "description": "Stops the current run after the relation in progress and blocks new runs until Resume.",
+      "button_label": "Pause",
+      "button_variant": "outline",
+      "button_color": "orange"
+    },
+    {
+      "id": "resume",
+      "label": "Resume",
+      "description": "Lifts the pause (also set by the circuit breaker).",
+      "button_label": "Resume",
+      "button_variant": "outline",
+      "button_color": "blue"
+    },
+    {
+      "id": "scan",
+      "label": "Scan",
+      "description": "Counts the relations due for a probe and estimates the duration. Writes nothing.",
+      "button_label": "Scan",
+      "button_variant": "outline",
+      "button_color": "blue"
+    },
+    {
+      "id": "coverage",
+      "label": "Coverage Stats",
+      "description": "Share of relations already probed, per type, with the quality tiers found.",
+      "button_label": "Stats",
+      "button_variant": "outline",
+      "button_color": "blue"
+    }
+  ]
+}
