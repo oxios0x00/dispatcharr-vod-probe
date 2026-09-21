@@ -1,6 +1,6 @@
 {
   "name": "VOD Probe",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "description": "Probes the real quality of each VOD relation (movies and every episode of every series version) with ffprobe in a background task and writes it into the relation's custom_properties, so every tool reading Dispatcharr's API can use it. Dry run by default.",
   "author": "oxios0x00",
   "license": "MIT",
@@ -75,33 +75,9 @@
       "id": "circuit_breaker_error_ratio",
       "label": "Stop when the error ratio exceeds",
       "type": "number",
-      "default": 0.5,
+      "default": 0.8,
       "min": 0,
       "help_text": "Checked after 5 probes. The run pauses itself instead of hammering a failing provider."
-    },
-    {
-      "id": "seconds_per_probe",
-      "label": "Estimated seconds per probe",
-      "type": "number",
-      "default": 1,
-      "min": 0.1,
-      "help_text": "Only used by Scan to estimate how long a full pass would take."
-    },
-    {
-      "id": "retry_after_hours",
-      "label": "Retry failed probes after (hours)",
-      "type": "number",
-      "default": 24,
-      "min": 1,
-      "help_text": "A relation whose probe failed is offered again by Scan only after this delay."
-    },
-    {
-      "id": "max_attempts",
-      "label": "Max attempts per relation",
-      "type": "number",
-      "default": 3,
-      "min": 1,
-      "help_text": "After this many failures a relation is left alone until Retry Errors is used."
     },
     {
       "id": "probe_timeout_seconds",
@@ -110,14 +86,6 @@
       "default": 25,
       "min": 5,
       "help_text": "ffprobe gives up after this delay."
-    },
-    {
-      "id": "seconds_per_episode_load",
-      "label": "Estimated seconds per episode load",
-      "type": "number",
-      "default": 1.5,
-      "min": 0.1,
-      "help_text": "Only used by Scan to estimate the duration."
     },
     {
       "id": "schedule_cron",
@@ -151,6 +119,14 @@
       "button_label": "Status",
       "button_variant": "outline",
       "button_color": "blue"
+    },
+    {
+      "id": "retry_errors",
+      "label": "Retry Errors",
+      "description": "A failed probe is never retried on its own. This flags every failed relation (and series version left pending) so the next run, scheduled or manual, tries them again.",
+      "button_label": "Retry",
+      "button_variant": "outline",
+      "button_color": "orange"
     },
     {
       "id": "pause",

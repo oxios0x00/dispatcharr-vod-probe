@@ -70,20 +70,32 @@ def test_failure_keeps_last_quality_and_counts_attempts():
 
 
 def test_needs_probe():
-    assert needs_probe({}, NOW)
-    assert needs_probe(None, NOW)
+    assert needs_probe({})
+    assert needs_probe(None)
     ok = merge_success({}, RESULT, NOW)
-    assert not needs_probe(ok, NOW + timedelta(days=90))
+    assert not needs_probe(ok)
     stale = {"probe": {**ok["probe"], "schema_version": PROBE_SCHEMA_VERSION - 1}}
-    assert needs_probe(stale, NOW)
+    assert needs_probe(stale)
 
 
-def test_failed_probe_waits_then_stops_after_max_attempts():
+def test_a_failed_probe_is_never_retried_on_its_own_only_when_flagged():
+    from contract import flag_retry
+
     failed = merge_failure({}, "boom", NOW)
-    assert not needs_probe(failed, NOW + timedelta(hours=1))
-    assert needs_probe(failed, NOW + timedelta(hours=25))
-    third = merge_failure(merge_failure(failed, "boom", NOW), "boom", NOW)
-    assert not needs_probe(third, NOW + timedelta(days=30), max_attempts=3)
+    assert not needs_probe(failed)
+    flagged = flag_retry(failed)
+    assert flagged["probe"]["retry"] is True and "retry" not in failed["probe"]  # the input is not modified
+    assert needs_probe(flagged)
+    again = merge_failure(flagged, "boom", NOW)  # the retry happened and failed again
+    assert "retry" not in again["probe"] and again["probe"]["attempts"] == 2
+    assert not needs_probe(again)
+
+
+def test_flag_retry_leaves_good_and_missing_blocks_alone():
+    from contract import flag_retry
+
+    ok = merge_success({}, RESULT, NOW)
+    assert flag_retry(ok) == ok and flag_retry({}) == {}
 
 
 def test_coverage_bucket():
@@ -116,8 +128,8 @@ def test_inferred_block_counts_as_done_unless_every_episode_must_be_measured():
     from contract import merge_inferred
 
     inferred = merge_inferred({}, merge_success({}, RESULT, NOW), 1, NOW)
-    assert not needs_probe(inferred, NOW)
-    assert needs_probe(inferred, NOW, inferred_due=True)
+    assert not needs_probe(inferred)
+    assert needs_probe(inferred, inferred_due=True)
     assert coverage_bucket(inferred) == "inferred"
 
 
@@ -148,17 +160,19 @@ def test_series_work():
     from contract import series_marker, series_work
 
     fresh = {"episodes_fetched": True, "basic_data": {"last_modified": "5"}}
-    assert series_work({"episodes_fetched": False}, 0, "first_of_series", NOW) == {"reason": "load", "reload": True}
-    assert series_work(fresh, 20, "first_of_series", NOW) == {"reason": "unmarked", "reload": False}
+    assert series_work({"episodes_fetched": False}, 0, "first_of_series") == {"reason": "load", "reload": True}
+    assert series_work(fresh, 20, "first_of_series") == {"reason": "unmarked", "reload": False}
     done = series_marker(fresh, 5, 20, 2, "first_of_series", 99, NOW)
-    assert series_work(done, 20, "first_of_series", NOW) is None
-    assert series_work(done, 21, "first_of_series", NOW) == {"reason": "count", "reload": False}
+    assert series_work(done, 20, "first_of_series") is None
+    assert series_work(done, 21, "first_of_series") == {"reason": "count", "reload": False}
     moved = {**done, "basic_data": {"last_modified": "6"}}
-    assert series_work(moved, 20, "first_of_series", NOW) == {"reason": "changed", "reload": True}
-    assert series_work(done, 20, "all", NOW) == {"reason": "mode", "reload": False}
+    assert series_work(moved, 20, "first_of_series") == {"reason": "changed", "reload": True}
+    assert series_work(done, 20, "all") == {"reason": "mode", "reload": False}
     pending = series_marker(fresh, 5, 20, 2, "first_of_series", None, NOW)
-    assert series_work(pending, 20, "first_of_series", NOW) is None  # too soon to retry
-    assert series_work(pending, 20, "first_of_series", NOW + timedelta(hours=25)) == {"reason": "retry", "reload": False}
+    assert series_work(pending, 20, "first_of_series") is None  # left alone until Retry Errors
+    from contract import flag_retry
+
+    assert series_work(flag_retry(pending), 20, "first_of_series") == {"reason": "retry", "reload": False}
 
 
 def test_a_reload_by_dispatcharr_after_our_summary_forces_reprocessing():
@@ -166,10 +180,10 @@ def test_a_reload_by_dispatcharr_after_our_summary_forces_reprocessing():
 
     fresh = {"episodes_fetched": True, "basic_data": {"last_modified": "5"}}
     done = series_marker(fresh, 5, 20, 2, "first_of_series", 99, NOW)
-    assert series_work(done, 20, "first_of_series", NOW, last_episode_refresh=NOW - timedelta(hours=1)) is None
+    assert series_work(done, 20, "first_of_series", last_episode_refresh=NOW - timedelta(hours=1)) is None
     # our own reload, a fraction of a second before the summary's truncated time
-    assert series_work(done, 20, "first_of_series", NOW, last_episode_refresh=NOW + timedelta(seconds=1)) is None
-    assert series_work(done, 20, "first_of_series", NOW, last_episode_refresh=NOW + timedelta(minutes=5)) == {
+    assert series_work(done, 20, "first_of_series", last_episode_refresh=NOW + timedelta(seconds=1)) is None
+    assert series_work(done, 20, "first_of_series", last_episode_refresh=NOW + timedelta(minutes=5)) == {
         "reason": "reloaded", "reload": False,
     }
 
@@ -179,8 +193,8 @@ def test_a_more_thorough_mode_redoes_a_series_a_lighter_one_does_not():
 
     fresh = {"episodes_fetched": True, "basic_data": {"last_modified": "5"}}
     done = series_marker(fresh, 5, 20, 2, "first_of_season", 99, NOW)
-    assert series_work(done, 20, "first_of_series", NOW) is None
-    assert series_work(done, 20, "first_of_season", NOW) is None
-    assert series_work(done, 20, "all", NOW) == {"reason": "mode", "reload": False}
+    assert series_work(done, 20, "first_of_series") is None
+    assert series_work(done, 20, "first_of_season") is None
+    assert series_work(done, 20, "all") == {"reason": "mode", "reload": False}
     light = series_marker(fresh, 5, 20, 2, "first_of_series", 99, NOW)
-    assert series_work(light, 20, "first_of_season", NOW) == {"reason": "mode", "reload": False}
+    assert series_work(light, 20, "first_of_season") == {"reason": "mode", "reload": False}

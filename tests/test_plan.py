@@ -1,6 +1,6 @@
 import os
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -8,7 +8,6 @@ from contract import merge_failure, merge_inferred, merge_success
 from plan import MODE_ALL, MODE_FIRST, episodes_to_infer, plan_series
 
 NOW = datetime(2026, 9, 21, 12, 0, 0, tzinfo=timezone.utc)
-RETRY = timedelta(hours=24)
 RESULT = {"ok": True, "width": 1920, "height": 1080, "quality_label": "1080p", "video_codec": "h264",
           "hdr_type": "sdr", "summary": {}}
 MEASURED = merge_success({}, RESULT, NOW)
@@ -16,7 +15,7 @@ INFERRED = merge_inferred({}, MEASURED, 1, NOW)
 
 
 def plan(entries, mode=MODE_FIRST):
-    return plan_series(entries, mode, NOW, RETRY, 3)
+    return plan_series(entries, mode)
 
 
 def test_first_of_series_with_nothing_probed_tries_the_first_episodes_in_order():
@@ -36,9 +35,17 @@ def test_a_new_episode_of_a_known_season_is_inferred_not_probed():
 
 
 def test_first_episode_failing_falls_to_the_next_one():
-    failed = merge_failure({}, "boom", NOW)  # too recent to retry
+    failed = merge_failure({}, "boom", NOW)  # a failure is not retried on its own
     result = plan([(1, failed), (2, {}), (3, {})])
     assert result["candidates"] == [2, 3]
+
+
+def test_a_failed_episode_flagged_for_retry_is_tried_again():
+    from contract import flag_retry
+
+    failed = merge_failure({}, "boom", NOW)
+    result = plan([(1, flag_retry(failed)), (2, {}), (3, {})])
+    assert result["candidates"] == [1, 2, 3]
 
 
 def test_all_mode_probes_every_episode_including_inferred_ones():

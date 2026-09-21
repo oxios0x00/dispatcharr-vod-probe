@@ -15,7 +15,7 @@ except ImportError:  # imported as a top-level module by the unit tests
     from probe import PROBE_SCHEMA_VERSION, _AD_TITLE_HINTS
 
 PLUGIN_SOURCE = "vod-probe"
-PLUGIN_VERSION = "0.6.1"
+PLUGIN_VERSION = "0.7.0"
 
 STATUS_OK = "ok"
 STATUS_ERROR = "error"
@@ -174,6 +174,7 @@ def merge_failure(existing, error, now, unreachable=None):
     text = scrub_error(error or "unknown error")
     if unreachable is None:
         unreachable = any(hint in text.lower() for hint in _UNREACHABLE_HINTS)
+    previous.pop("retry", None)  # this is the retry the flag asked for
     previous.update(
         schema_version=PROBE_SCHEMA_VERSION,
         probed_at=_iso(now),
@@ -186,12 +187,12 @@ def merge_failure(existing, error, now, unreachable=None):
     return merged
 
 
-def needs_probe(custom_properties, now, retry_after=timedelta(hours=24), max_attempts=3, inferred_due=False):
+def needs_probe(custom_properties, inferred_due=False):
     """Whether a relation is due for a probe: no block yet, a block written
-    under an older schema, or a failure old enough to try again (and not yet
-    tried max_attempts times). A block copied from a sibling episode
-    (status "inferred") counts as done, unless inferred_due says every
-    episode must be measured individually."""
+    under an older schema, or a failed one that Retry Errors flagged. A failure
+    is never retried on its own. A block copied from a sibling episode (status
+    "inferred") counts as done, unless inferred_due says every episode must be
+    measured individually."""
     block = (custom_properties or {}).get("probe")
     if not isinstance(block, dict):
         return True
@@ -201,10 +202,17 @@ def needs_probe(custom_properties, now, retry_after=timedelta(hours=24), max_att
         return False
     if block.get("status") == STATUS_INFERRED:
         return inferred_due
-    if int(block.get("attempts") or 0) >= max_attempts:
-        return False
-    last = _parse_iso(block.get("probed_at"))
-    return last is None or now - last >= retry_after
+    return bool(block.get("retry"))
+
+
+def flag_retry(custom_properties):
+    """custom_properties with the probe block (or series summary) of a failed
+    relation marked to be tried again at the next run."""
+    merged = dict(custom_properties or {})
+    block = merged.get("probe")
+    if isinstance(block, dict) and block.get("status") not in (STATUS_OK, STATUS_INFERRED):
+        merged["probe"] = {**block, "retry": True}
+    return merged
 
 
 def is_measured(custom_properties):
@@ -255,8 +263,8 @@ def series_marker(existing, last_modified, episodes, seasons, mode, sampled_from
     handled. The marker records what was seen (the provider's last_modified,
     the episode and season counts), so the daily scan only has to read series
     relations, and only opens the series whose last_modified moved. It is
-    "pending" when some episodes still lack an answer or none were found: the
-    series is retried later, at most max_attempts times."""
+    "pending" when some episodes still lack an answer or none were found: it
+    stays so until Retry Errors flags it."""
     merged = dict(existing or {})
     previous = merged.get("probe") if isinstance(merged.get("probe"), dict) else {}
     complete = episodes > 0 and sampled_from is not None or (mode == "all" and episodes > 0)
@@ -282,7 +290,7 @@ def series_marker(existing, last_modified, episodes, seasons, mode, sampled_from
 _MODE_RANK = {"first_of_series": 0, "first_of_season": 1, "all": 2}
 
 
-def series_work(custom_properties, episode_count, mode, now, retry_after=timedelta(hours=24), max_attempts=3, last_episode_refresh=None):
+def series_work(custom_properties, episode_count, mode, last_episode_refresh=None):
     """What a series relation needs, from its own properties and the number of
     episodes Dispatcharr holds for it: None, or {"reason": ..., "reload": bool}.
     Reload means asking the provider for the episode list again: the series has
@@ -306,10 +314,7 @@ def series_work(custom_properties, episode_count, mode, now, retry_after=timedel
     if str(current) != str(marker.get("last_modified")) and not (current is None and marker.get("last_modified") is None):
         return {"reason": "changed", "reload": True}
     if marker.get("status") != STATUS_OK:
-        last = _parse_iso(marker.get("probed_at"))
-        if int(marker.get("attempts") or 0) < max_attempts and (last is None or now - last >= retry_after):
-            return {"reason": "retry", "reload": False}
-        return None
+        return {"reason": "retry", "reload": False} if marker.get("retry") else None
     if _MODE_RANK.get(mode, 0) > _MODE_RANK.get(marker.get("mode"), 0):
         return {"reason": "mode", "reload": False}  # a more thorough mode than the one it was done with
     if episode_count != marker.get("episodes"):

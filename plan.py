@@ -47,7 +47,7 @@ def _detach_foreign_copies(entries):
     return cleaned
 
 
-def plan_series(entries, mode, now, retry_after, max_attempts):
+def plan_series(entries, mode):
     """entries: [(relation_id, custom_properties)] for every episode of one
     series relation, in season and episode order.
 
@@ -60,7 +60,7 @@ def plan_series(entries, mode, now, retry_after, max_attempts):
     entries = _detach_foreign_copies(entries)
     if mode == MODE_ALL:
         return {
-            "candidates": [rid for rid, cp in entries if needs_probe(cp, now, retry_after, max_attempts, inferred_due=True)],
+            "candidates": [rid for rid, cp in entries if needs_probe(cp, inferred_due=True)],
             "representative": None,
             "infer": [],
         }
@@ -72,7 +72,7 @@ def plan_series(entries, mode, now, retry_after, max_attempts):
             "infer": [rid for rid, cp in entries if rid != representative and needs_inference(cp)],
         }
     return {
-        "candidates": [rid for rid, cp in entries if needs_probe(cp, now, retry_after, max_attempts)][:MAX_SAMPLE_TRIES],
+        "candidates": [rid for rid, cp in entries if needs_probe(cp)][:MAX_SAMPLE_TRIES],
         "representative": None,
         "infer": [],
     }

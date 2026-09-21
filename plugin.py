@@ -24,7 +24,7 @@ import threading
 import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 # Sibling modules are imported inside methods, not at module top level, to
 # avoid stale references across a plugin reload cycle (same pattern as
@@ -63,7 +63,7 @@ class _RateLimiter:
 
 class Plugin:
     name = "VOD Probe"
-    version = "0.6.1"
+    version = "0.7.0"
     description = (
         "Probes the real quality of each VOD relation with ffprobe and writes it "
         "into the relation's custom_properties, so every tool reading "
@@ -114,6 +114,8 @@ class Plugin:
                 return self._schedule_status()
             if action_id == "test_fire_schedule":
                 return self._test_fire_schedule(settings)
+            if action_id == "retry_errors":
+                return self._retry_errors()
             if action_id == "scan":
                 return self._scan(settings)
             if action_id == "coverage":
@@ -308,12 +310,7 @@ class Plugin:
         value = settings.get("episode_probing")
         return value if value in MODES else MODE_FIRST
 
-    @staticmethod
-    def _thresholds(settings):
-        retry_after = timedelta(hours=float(settings.get("retry_after_hours", 24) or 24))
-        return retry_after, int(settings.get("max_attempts", 3) or 3)
-
-    def _movies_due(self, settings, now):
+    def _movies_due(self, settings):
         """Ids of the movie relations due for a probe, or, when
         only_relation_ids is set, exactly those (forced, even if already
         probed)."""
@@ -324,14 +321,13 @@ class Plugin:
         if only:
             found = set(self._active_relations(movie_model).filter(id__in=only).values_list("id", flat=True))
             return [rid for rid in only if rid in found]
-        retry_after, max_attempts = self._thresholds(settings)
         return [
             rid
             for rid, properties in self._active_relations(movie_model).values_list("id", "custom_properties").iterator()
-            if needs_probe(properties, now, retry_after, max_attempts)
+            if needs_probe(properties)
         ]
 
-    def _series_due(self, settings, now):
+    def _series_due(self, settings):
         """{series relation id: {"reason", "reload", "episodes"}} for every
         series relation with something to do. Reads series relations only, plus
         one grouped count of their episodes: never the episodes themselves."""
@@ -340,7 +336,6 @@ class Plugin:
         from .contract import series_work
 
         mode = self._mode(settings)
-        retry_after, max_attempts = self._thresholds(settings)
         series_model = self._series_model()
         _, episode_model = self._relation_models()[1]
         counts = {
@@ -351,12 +346,12 @@ class Plugin:
         for srid, properties, refreshed in self._active_relations(series_model).values_list(
             "id", "custom_properties", "last_episode_refresh"
         ).iterator():
-            work = series_work(properties, counts.get(srid, 0), mode, now, retry_after, max_attempts, refreshed)
+            work = series_work(properties, counts.get(srid, 0), mode, refreshed)
             if work:
                 due[srid] = {**work, "episodes": counts.get(srid, 0)}
         return due
 
-    def _units(self, settings, now):
+    def _units(self, settings):
         """[("movies", id) | ("series", id)]: what a run has to do. With
         only_relation_ids (movies) or only_series_relation_ids (series
         versions) set, only those, and nothing else."""
@@ -365,13 +360,13 @@ class Plugin:
             int(x) for x in str(settings.get("only_series_relation_ids") or "").replace(" ", "").split(",") if x.isdigit()
         ]
         if only_movies or only_series:
-            units = [("movies", rid) for rid in self._movies_due(settings, now)] if only_movies else []
+            units = [("movies", rid) for rid in self._movies_due(settings)] if only_movies else []
             if only_series:
-                plan = self._series_due(settings, now)
+                plan = self._series_due(settings)
                 units += [("series", srid) for srid in only_series if srid in plan]
             return units
-        units = [("movies", rid) for rid in self._movies_due(settings, now)]
-        return units + [("series", srid) for srid in self._series_due(settings, now)]
+        units = [("movies", rid) for rid in self._movies_due(settings)]
+        return units + [("series", srid) for srid in self._series_due(settings)]
 
     # --- the run ------------------------------------------------------------
 
@@ -391,12 +386,12 @@ class Plugin:
         limit = int(settings.get("batch_limit", 25) or 0)
         max_concurrent = max(1, int(settings.get("max_concurrent_probes", 1) or 1))
         limiter = _RateLimiter(float(settings.get("max_probes_per_second", 2) or 0))
-        breaker_ratio = float(settings.get("circuit_breaker_error_ratio", 0.5) or 0.5)
+        breaker_ratio = float(settings.get("circuit_breaker_error_ratio", 0.8) or 0.8)
         timeout = int(settings.get("probe_timeout_seconds", 25) or 25)
         dry_run = bool(settings.get("dry_run", True))
         now = datetime.now(timezone.utc)
 
-        units = self._units(settings, now)
+        units = self._units(settings)
         available = len(units)
         if limit > 0 and available > limit:
             import random
@@ -516,7 +511,6 @@ class Plugin:
         from .plan import MODE_ALL, episodes_to_infer, plan_series, split_groups
 
         mode = self._mode(settings)
-        retry_after, max_attempts = self._thresholds(settings)
         series_model = self._series_model()
         _, episode_model = self._relation_models()[1]
         out = _outcome()
@@ -525,9 +519,7 @@ class Plugin:
         if relation is None:
             return _outcome(errors=1, error="series relation no longer exists")
         episode_count = episode_model.objects.filter(series_relation_id=series_relation_id).count()
-        work = series_work(
-            relation.custom_properties, episode_count, mode, now, retry_after, max_attempts, relation.last_episode_refresh
-        )
+        work = series_work(relation.custom_properties, episode_count, mode, relation.last_episode_refresh)
         if work is None:
             return out
         if work["reload"]:
@@ -552,7 +544,7 @@ class Plugin:
         first_sample = None
         groups = split_groups(rows, mode)
         for entries in groups:
-            group_plan = plan_series(entries, mode, now, retry_after, max_attempts)
+            group_plan = plan_series(entries, mode)
             representative = group_plan["representative"]
             representative_props = dict(entries)[representative] if representative is not None else None
             infer = group_plan["infer"]
@@ -666,31 +658,41 @@ class Plugin:
     # --- read-only reports (short, fine inside a request) ---------------------
 
     def _scan(self, settings):
-        now = datetime.now(timezone.utc)
-        seconds_per_probe = float(settings.get("seconds_per_probe", 1) or 1)
-        seconds_per_load = float(settings.get("seconds_per_episode_load", 1.5) or 1.5)
-        movies = len(self._movies_due(settings, now))
-        due = self._series_due(settings, now)
+        movies = len(self._movies_due(settings))
+        due = self._series_due(settings)
         reasons = Counter(item["reason"] for item in due.values())
         reloads = sum(1 for item in due.values() if item["reload"])
-        mode = self._mode(settings)
-        all_mode = mode == "all"
-        # One probe for each series to load; "all" mode probes every episode of the others.
-        probes = reasons["load"] + (sum(item["episodes"] for item in due.values() if not item["reload"]) if all_mode else 0)
-        total_seconds = (movies + probes) * seconds_per_probe + reloads * seconds_per_load
         labels = {"load": "never loaded", "unmarked": "no summary yet", "changed": "provider changed it",
-                  "count": "episode count differs", "retry": "retry", "mode": "mode changed",
+                  "count": "episode count differs", "retry": "flagged for retry", "mode": "more thorough setting",
                   "reloaded": "reloaded by Dispatcharr since"}
         detail = ", ".join(f"{labels[k]} {v}" for k, v in reasons.most_common()) or "none"
         return {
             "status": "ok",
             "message": (
                 f"Movies to probe: {movies}. Series versions to handle: {len(due)} ({detail}); "
-                f"{reloads} need their episode list requested from the provider. "
-                f"Estimated: about {total_seconds / 3600:.1f} h ({dict(first_of_series='one probe per series', first_of_season='one probe per season', all='every episode')[mode]}, "
-                "one at a time; series loaded now add their probes once known). Nothing was written."
+                f"{reloads} need their episode list requested from the provider. Nothing was written."
             ),
         }
+
+    def _retry_errors(self):
+        """Flag the failed relations so the next run (scheduled or manual) tries
+        them again. A failure is never retried on its own."""
+        from .contract import flag_retry
+
+        counts = Counter()
+        for label, model in self._relation_models():
+            failed = model.objects.filter(custom_properties__probe__status__in=["error", "unreachable"])
+            for rid in list(failed.values_list("id", flat=True)):
+                if self._write(model, rid, flag_retry):
+                    counts[label] += 1
+        pending = self._series_model().objects.filter(custom_properties__probe__status="pending")
+        for rid in list(pending.values_list("id", flat=True)):
+            if self._write(self._series_model(), rid, flag_retry):
+                counts["series versions"] += 1
+        if not counts:
+            return {"status": "ok", "message": "Nothing failed, nothing to retry."}
+        text = ", ".join(f"{n} {label}" for label, n in counts.items())
+        return {"status": "ok", "message": f"Flagged for retry at the next run: {text}."}
 
     def _coverage(self):
         from .contract import coverage_bucket
