@@ -616,12 +616,13 @@ class Plugin:
             if mode != MODE_ALL and representative is not None:
                 answered += 1
                 first_sample = first_sample or representative
-                for rid in infer:
-                    if dry_run or self._write(
-                        episode_model, rid,
+                if dry_run:
+                    out["inferred"] += len(infer)
+                else:
+                    out["inferred"] += self._write_many(
+                        episode_model, infer,
                         lambda current: merge_inferred(current, representative_props, representative, now),
-                    ):
-                        out["inferred"] += 1
+                    )
 
         if not dry_run:
             last_modified = ((relation.custom_properties or {}).get("basic_data") or {}).get("last_modified")
@@ -656,6 +657,29 @@ class Plugin:
             if current is None and not model.objects.filter(id=relation_id).exists():
                 return False
             return bool(model.objects.filter(id=relation_id).update(custom_properties=merge(current)))
+
+    @staticmethod
+    def _write_many(model, relation_ids, merge, chunk=200):
+        """_write for many relations at once: each chunk is one transaction that
+        locks its rows (in id order, so two writers cannot deadlock), merges each
+        dictionary and saves them with one bulk update instead of three queries
+        per relation. Relations deleted meanwhile are skipped. Returns how many
+        rows were written."""
+        from django.db import transaction
+
+        ids = list(relation_ids)
+        written = 0
+        for start in range(0, len(ids), chunk):
+            with transaction.atomic():
+                rows = list(
+                    model.objects.select_for_update().filter(id__in=ids[start:start + chunk]).order_by("id")
+                    .values_list("id", "custom_properties")
+                )
+                objects = [model(id=rid, custom_properties=merge(current)) for rid, current in rows]
+                if objects:
+                    model.objects.bulk_update(objects, ["custom_properties"])
+                written += len(objects)
+        return written
 
     @staticmethod
     def _describe(progress):
@@ -847,14 +871,14 @@ class Plugin:
                 series_to_visit.update(srid for _, srid in rows if srid)
             else:
                 rows = [(rid, None) for rid in failed.values_list("id", flat=True)]
-            for rid, _ in rows:
-                if self._write(model, rid, flag_retry):
-                    counts[label] += 1
+            flagged = self._write_many(model, [rid for rid, _ in rows], flag_retry)
+            if flagged:
+                counts[label] += flagged
         series_model = self._series_model()
         series_to_visit.update(series_model.objects.filter(custom_properties__probe__status="pending").values_list("id", flat=True))
-        for rid in series_to_visit:
-            if self._write(series_model, rid, flag_series_retry):
-                counts["series versions"] += 1
+        flagged = self._write_many(series_model, sorted(series_to_visit), flag_series_retry)
+        if flagged:
+            counts["series versions"] += flagged
         if not counts:
             return {"status": "ok", "message": "Nothing failed, nothing to retry."}
         text = ", ".join(f"{n} {label}" for label, n in counts.items())
