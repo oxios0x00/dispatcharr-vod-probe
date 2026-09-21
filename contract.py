@@ -15,7 +15,7 @@ except ImportError:  # imported as a top-level module by the unit tests
     from probe import PROBE_SCHEMA_VERSION, _AD_TITLE_HINTS
 
 PLUGIN_SOURCE = "vod-probe"
-PLUGIN_VERSION = "0.6.0"
+PLUGIN_VERSION = "0.6.1"
 
 STATUS_OK = "ok"
 STATUS_ERROR = "error"
@@ -278,6 +278,10 @@ def series_marker(existing, last_modified, episodes, seasons, mode, sampled_from
     return merged
 
 
+# How thorough each way of sampling is: moving to a higher one redoes a series, a lower one leaves it.
+_MODE_RANK = {"first_of_series": 0, "first_of_season": 1, "all": 2}
+
+
 def series_work(custom_properties, episode_count, mode, now, retry_after=timedelta(hours=24), max_attempts=3, last_episode_refresh=None):
     """What a series relation needs, from its own properties and the number of
     episodes Dispatcharr holds for it: None, or {"reason": ..., "reload": bool}.
@@ -306,8 +310,8 @@ def series_work(custom_properties, episode_count, mode, now, retry_after=timedel
         if int(marker.get("attempts") or 0) < max_attempts and (last is None or now - last >= retry_after):
             return {"reason": "retry", "reload": False}
         return None
-    if mode == "all" and marker.get("mode") != "all":
-        return {"reason": "mode", "reload": False}
+    if _MODE_RANK.get(mode, 0) > _MODE_RANK.get(marker.get("mode"), 0):
+        return {"reason": "mode", "reload": False}  # a more thorough mode than the one it was done with
     if episode_count != marker.get("episodes"):
         return {"reason": "count", "reload": False}
     return None

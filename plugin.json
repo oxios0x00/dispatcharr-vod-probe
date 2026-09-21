@@ -1,6 +1,6 @@
 {
   "name": "VOD Probe",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Probes the real quality of each VOD relation (movies and every episode of every series version) with ffprobe in a background task and writes it into the relation's custom_properties, so every tool reading Dispatcharr's API can use it. Dry run by default.",
   "author": "oxios0x00",
   "license": "MIT",
@@ -42,14 +42,18 @@
       "options": [
         {
           "value": "first_of_series",
-          "label": "One episode per series version, copied to all the others (recommended)"
+          "label": "One episode per series version, copied to all the others (default)"
+        },
+        {
+          "value": "first_of_season",
+          "label": "One episode per season, copied to the others of that season"
         },
         {
           "value": "all",
           "label": "Every episode individually"
         }
       ],
-      "help_text": "Either way, every episode ends up with quality info. With one episode per series version, all the others get a copy of its result marked status 'inferred' (with inferred_from), assuming the files of a version are alike whatever the season; each version of a series (standard, 4K...) is sampled on its own. Cost, measured on a small sample: about 1.2 s per probe. One probe per version is about 900 probes for 900 versions (around 15 minutes) whatever the number of seasons, against one probe per episode (roughly 9 per version on the sample, several hours) for 'every episode'. Loading the episode list is needed in both cases: one provider request per series version, around 0.3 to 0.5 s each."
+      "help_text": "Either way, every episode ends up with quality info. The others get a copy of a probed episode's result, marked status 'inferred' (with inferred_from). Each version of a series (standard, 4K...) is sampled on its own. 'One per series version' assumes the files of a version are alike whatever the season; 'One per season' checks each season, which costs one probe more per extra season and catches a season encoded differently. Cost, measured on a small sample: about 1.2 s per probe. About 900 series versions with 1 to 2 seasons is 900 to 1,200 probes (15 to 25 minutes), and with 10 seasons each it is 9,000 (3 hours) per season against 900 per series; 'Every episode' is one probe per episode, several hours. Loading the episode list is needed in every case: one provider request per series version, around 0.3 to 0.5 s each. Moving to a more thorough choice redoes the series already done; moving to a lighter one leaves them as they are."
     },
     {
       "id": "max_concurrent_probes",

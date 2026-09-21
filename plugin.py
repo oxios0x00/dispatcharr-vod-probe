@@ -63,7 +63,7 @@ class _RateLimiter:
 
 class Plugin:
     name = "VOD Probe"
-    version = "0.6.0"
+    version = "0.6.1"
     description = (
         "Probes the real quality of each VOD relation with ffprobe and writes it "
         "into the relation's custom_properties, so every tool reading "
@@ -303,9 +303,10 @@ class Plugin:
 
     @staticmethod
     def _mode(settings):
-        from .plan import MODE_ALL, MODE_FIRST
+        from .plan import MODE_FIRST, MODES
 
-        return MODE_ALL if settings.get("episode_probing") == MODE_ALL else MODE_FIRST
+        value = settings.get("episode_probing")
+        return value if value in MODES else MODE_FIRST
 
     @staticmethod
     def _thresholds(settings):
@@ -512,7 +513,7 @@ class Plugin:
         from apps.vod.tasks import refresh_series_episodes
 
         from .contract import merge_inferred, series_marker, series_work
-        from .plan import MODE_FIRST, episodes_to_infer, plan_series
+        from .plan import MODE_ALL, episodes_to_infer, plan_series, split_groups
 
         mode = self._mode(settings)
         retry_after, max_attempts = self._thresholds(settings)
@@ -541,42 +542,49 @@ class Plugin:
                 return _outcome(errors=1, error="could not load the episodes (see Dispatcharr's log)")
             out["loaded"] = 1
 
-        entries = list(
+        rows = list(
             episode_model.objects.filter(series_relation_id=series_relation_id)
             .order_by("episode__season_number", "episode__episode_number")
-            .values_list("id", "custom_properties")
+            .values_list("id", "custom_properties", "episode__season_number")
         )
-        seasons = len(set(
-            episode_model.objects.filter(series_relation_id=series_relation_id).values_list("episode__season_number", flat=True)
-        ))
-        series_plan = plan_series(entries, mode, now, retry_after, max_attempts)
-        representative = series_plan["representative"]
-        representative_props = dict(entries)[representative] if representative is not None else None
-        infer = series_plan["infer"]
-        for rid in series_plan["candidates"]:
-            result = self._probe_relation(episode_model, rid, timeout, limiter, now, logger, dry_run)
-            _add_outcome(out, result)
-            if mode == MODE_FIRST and result["props"] is not None:
-                representative, representative_props = rid, result["props"]
-                infer = episodes_to_infer(entries, rid)
-                break
-        if mode == MODE_FIRST and representative is not None:
-            for rid in infer:
-                if dry_run or self._write(
-                    episode_model, rid,
-                    lambda current: merge_inferred(current, representative_props, representative, now),
-                ):
-                    out["inferred"] += 1
+        seasons = len({season for _, _, season in rows})
+        answered = 0          # groups that ended with a measured episode
+        first_sample = None
+        groups = split_groups(rows, mode)
+        for entries in groups:
+            group_plan = plan_series(entries, mode, now, retry_after, max_attempts)
+            representative = group_plan["representative"]
+            representative_props = dict(entries)[representative] if representative is not None else None
+            infer = group_plan["infer"]
+            for rid in group_plan["candidates"]:
+                result = self._probe_relation(episode_model, rid, timeout, limiter, now, logger, dry_run)
+                _add_outcome(out, result)
+                if mode != MODE_ALL and result["props"] is not None:
+                    representative, representative_props = rid, result["props"]
+                    infer = episodes_to_infer(entries, rid)
+                    break
+            if mode != MODE_ALL and representative is not None:
+                answered += 1
+                first_sample = first_sample or representative
+                for rid in infer:
+                    if dry_run or self._write(
+                        episode_model, rid,
+                        lambda current: merge_inferred(current, representative_props, representative, now),
+                    ):
+                        out["inferred"] += 1
 
         if not dry_run:
             last_modified = ((relation.custom_properties or {}).get("basic_data") or {}).get("last_modified")
-            complete_sample = representative if mode == MODE_FIRST else (entries[0][0] if entries and not out["errors"] else None)
+            if mode == MODE_ALL:
+                complete_sample = rows[0][0] if rows and not out["errors"] else None
+            else:
+                complete_sample = first_sample if rows and answered == len(groups) else None
             self._write(
                 series_model, series_relation_id,
                 # The current time, not the start of the pass: the summary must be newer than
                 # the reload done above, or the series would look reloaded after it.
                 lambda current: series_marker(
-                    current, last_modified, len(entries), seasons, mode, complete_sample, datetime.now(timezone.utc)
+                    current, last_modified, len(rows), seasons, mode, complete_sample, datetime.now(timezone.utc)
                 ),
             )
         return out
@@ -665,7 +673,8 @@ class Plugin:
         due = self._series_due(settings, now)
         reasons = Counter(item["reason"] for item in due.values())
         reloads = sum(1 for item in due.values() if item["reload"])
-        all_mode = self._mode(settings) == "all"
+        mode = self._mode(settings)
+        all_mode = mode == "all"
         # One probe for each series to load; "all" mode probes every episode of the others.
         probes = reasons["load"] + (sum(item["episodes"] for item in due.values() if not item["reload"]) if all_mode else 0)
         total_seconds = (movies + probes) * seconds_per_probe + reloads * seconds_per_load
@@ -678,7 +687,7 @@ class Plugin:
             "message": (
                 f"Movies to probe: {movies}. Series versions to handle: {len(due)} ({detail}); "
                 f"{reloads} need their episode list requested from the provider. "
-                f"Estimated: about {total_seconds / 3600:.1f} h ({'every episode' if all_mode else 'one probe per series'}, "
+                f"Estimated: about {total_seconds / 3600:.1f} h ({dict(first_of_series='one probe per series', first_of_season='one probe per season', all='every episode')[mode]}, "
                 "one at a time; series loaded now add their probes once known). Nothing was written."
             ),
         }

@@ -48,3 +48,26 @@ def test_all_mode_probes_every_episode_including_inferred_ones():
 
 def test_episodes_to_infer_after_a_successful_sample():
     assert episodes_to_infer([(1, {}), (2, {}), (3, MEASURED)], 3) == [1, 2]
+
+
+def test_split_groups_by_mode():
+    from plan import MODE_SEASON, split_groups
+
+    rows = [(1, {}, 1), (2, {}, 1), (3, {}, 2), (4, {}, 2), (5, {}, 3)]
+    assert split_groups(rows, MODE_FIRST) == [[(1, {}), (2, {}), (3, {}), (4, {}), (5, {})]]
+    assert split_groups(rows, MODE_SEASON) == [[(1, {}), (2, {})], [(3, {}), (4, {})], [(5, {})]]
+
+
+def test_copies_from_outside_the_group_are_redone_when_sampling_per_season():
+    from plan import MODE_SEASON
+
+    copied_from_season_one = merge_inferred({}, MEASURED, 1, NOW)
+    season_two = [(3, copied_from_season_one), (4, copied_from_season_one)]
+    result = plan(season_two, MODE_SEASON)
+    assert result["candidates"] == [3, 4] and result["representative"] is None
+
+
+def test_copies_from_a_relation_that_no_longer_exists_are_redone():
+    orphan = merge_inferred({}, MEASURED, 999, NOW)
+    result = plan([(1, orphan), (2, orphan)])
+    assert result["candidates"] == [1, 2]

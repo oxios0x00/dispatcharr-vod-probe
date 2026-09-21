@@ -172,3 +172,15 @@ def test_a_reload_by_dispatcharr_after_our_summary_forces_reprocessing():
     assert series_work(done, 20, "first_of_series", NOW, last_episode_refresh=NOW + timedelta(minutes=5)) == {
         "reason": "reloaded", "reload": False,
     }
+
+
+def test_a_more_thorough_mode_redoes_a_series_a_lighter_one_does_not():
+    from contract import series_marker, series_work
+
+    fresh = {"episodes_fetched": True, "basic_data": {"last_modified": "5"}}
+    done = series_marker(fresh, 5, 20, 2, "first_of_season", 99, NOW)
+    assert series_work(done, 20, "first_of_series", NOW) is None
+    assert series_work(done, 20, "first_of_season", NOW) is None
+    assert series_work(done, 20, "all", NOW) == {"reason": "mode", "reload": False}
+    light = series_marker(fresh, 5, 20, 2, "first_of_series", 99, NOW)
+    assert series_work(light, 20, "first_of_season", NOW) == {"reason": "mode", "reload": False}
