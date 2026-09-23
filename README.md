@@ -154,7 +154,7 @@ Probe Run is a Celery task on Dispatcharr's `dvr` queue, not part of the web req
 1. Put the plugin in Dispatcharr's plugins directory (`/data/plugins` by default), in a folder named `vod_probe`:
 
    ```bash
-   git clone https://github.com/oxios0x00/vod-probe.git /data/plugins/vod_probe
+   git clone https://github.com/oxios0x00/dispatcharr-vod-probe.git /data/plugins/vod_probe
    ```
 
 2. Make sure `ffprobe` is on the container's `PATH` (Dispatcharr's image ships with it).

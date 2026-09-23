@@ -78,7 +78,7 @@ class Plugin:
         "Dispatcharr's API can use it."
     )
     author = "oxios0x00"
-    help_url = "https://github.com/oxios0x00/vod-probe"
+    help_url = "https://github.com/oxios0x00/dispatcharr-vod-probe"
 
     SCHEDULED_TASK_CELERY_NAME = "vod_probe.run"
     SCHEDULE_TASK_NAME = "vod_probe.auto_run"
