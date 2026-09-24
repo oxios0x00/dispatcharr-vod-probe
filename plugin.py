@@ -71,7 +71,7 @@ class _RateLimiter:
 
 class Plugin:
     name = "VOD Probe"
-    version = "0.10.0"
+    version = "1.0.0"
     description = (
         "Probes the real quality of each VOD relation with ffprobe and writes it "
         "into the relation's custom_properties, so every tool reading "
@@ -95,11 +95,18 @@ class Plugin:
     _NOTIFICATION_KEY_PREFIX = "vod-probe-run-"
 
     def __init__(self):
-        from .state import State
+        import logging
 
-        data_dir = os.environ.get(
-            "VOD_PROBE_DATA_DIR", os.path.join(os.path.dirname(__file__), "data")
-        )
+        from .state import State, data_dir_for, move_legacy_state
+
+        # Next to the plugin's folder, not inside it: an update replaces the folder.
+        plugin_dir = os.path.dirname(os.path.abspath(__file__))
+        data_dir = data_dir_for(plugin_dir)
+        try:
+            if move_legacy_state(plugin_dir, data_dir):
+                logging.getLogger(LOGGER_NAME).info("Moved the plugin state from %s/data to %s", plugin_dir, data_dir)
+        except OSError as exc:  # the old state is only history and a pause flag
+            logging.getLogger(LOGGER_NAME).warning("Could not move the old plugin state to %s: %s", data_dir, exc)
         self.state = State(data_dir)
 
     # --- dispatch ---------------------------------------------------------

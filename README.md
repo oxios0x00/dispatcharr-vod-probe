@@ -114,7 +114,7 @@ If you build on this data, these are the rules:
 
 ### Movies
 
-Each movie relation is probed once. The plugin points `ffprobe` at the stream URL served by Dispatcharr and reads only the few megabytes it needs. A probe typically takes around a second.
+Each movie relation is probed once. Dispatcharr builds the relation's stream URL, the same way it does for playback: the provider's own URL, with that relation's account and stream id, so each version is measured at its own provider. `ffprobe` reads only the few megabytes it needs from it; a probe typically takes around a second. The probe goes straight to the provider, not through Dispatcharr's proxy, so Dispatcharr does not count it as a connection: if an account allows a single connection, a probe can clash with someone watching on that account.
 
 ### Series
 
@@ -151,15 +151,21 @@ Probe Run is a Celery task on Dispatcharr's `dvr` queue, not part of the web req
 
 ## Install
 
-1. Put the plugin in Dispatcharr's plugins directory (`/data/plugins` by default), in a folder named `vod_probe`:
+1. Download `vod_probe.zip` from the [latest release](https://github.com/oxios0x00/dispatcharr-vod-probe/releases/latest). In Dispatcharr, open *Plugins*, click **Import Plugin** and drop the ZIP. It installs into Dispatcharr's plugins directory (`/data/plugins` by default), in a folder named `vod_probe`.
+
+   Or clone the repository there yourself, in a folder of the same name:
 
    ```bash
    git clone https://github.com/oxios0x00/dispatcharr-vod-probe.git /data/plugins/vod_probe
    ```
 
 2. Make sure `ffprobe` is on the container's `PATH` (Dispatcharr's image ships with it).
-3. Restart Dispatcharr once, then enable **VOD Probe** in *Plugins*.
-4. Make sure the plugin's data directory is writable by the user Dispatcharr runs as. It keeps a small SQLite file there (the run lock, the pause flag and the progress of the current run); no probe result is stored in it.
+3. Restart Dispatcharr once, so that its background worker picks the plugin up, then enable **VOD Probe** in *Plugins*.
+4. The plugin creates a `vod_probe_data` folder next to its own, in the same plugins directory (set `VOD_PROBE_DATA_DIR` to put it elsewhere). It keeps a small SQLite file there: the run lock, the pause flag, and the progress of the current run and the last report. No probe result is stored in it. The plugins directory must be writable by the user Dispatcharr runs as, which it is by default.
+
+To upgrade, import the new ZIP the same way and accept to replace the installed plugin, then restart Dispatcharr. Dispatcharr replaces the whole plugin folder, which is why the plugin's data lives next to it: the settings, the schedule, the probe results (in the catalogue) and `vod_probe_data` are all kept. Up to 0.10.0 that state lived in `vod_probe/data/`, inside the plugin folder: upgrading from such a version by importing the ZIP loses it once (**Run Status** starts empty, a pause is lifted). An install updated in place, with `git pull`, keeps it, and the plugin moves it to `vod_probe_data` the first time it starts.
+
+To uninstall, click **[SCHEDULE] Remove** first (otherwise Celery keeps a nightly task for a plugin that is gone), delete the plugin in Dispatcharr, then the `vod_probe_data` folder, which Dispatcharr does not know about. What the plugin wrote into the catalogue stays there.
 
 ## Quick start
 
@@ -269,7 +275,7 @@ If a run fails after a Dispatcharr update, look at these first.
 
 ## Status
 
-Version 0.10.0. Tested on a Dispatcharr 0.31.0 test instance with a single Xtream Codes provider, on both movies and series, including a full first pass, disabling and re-enabling groups, failed probes and retries, and the scheduled trigger firing on its own with the retry switch on. Not tested on a production instance, with several providers, or with a concurrency above 1.
+Version 1.0.0. In daily use since 2026-09-21 on a Dispatcharr 0.31.0 instance that serves a Jellyfin library, with one Xtream Codes provider and a catalogue of about 600 movies, 900 series and 22,000 episodes. That covers a full first pass on movies and series, writes to the catalogue, disabling and re-enabling groups, failed probes and retries, Dispatcharr's own scheduled refreshes, and the plugin's scheduled runs with the retry switch on. Not tested with several providers or with a concurrency above 1.
 
 ## Development
 
@@ -280,6 +286,8 @@ python3 -m pytest
 ```
 
 Modules: `plugin.py` (actions and the run), `contract.py` (what is written and when a relation is due), `plan.py` (what to probe in a series), `breaker.py`, `state.py`, `probe.py` and `probe_summary.py` (the `ffprobe` call, adapted from [dispatcharr-vod-manager](https://github.com/oxios0x00/dispatcharr-vod-manager)).
+
+`python3 scripts/build_zip.py` builds `dist/vod_probe.zip`, the archive attached to each release, with everything in a `vod_probe/` folder so that Dispatcharr installs it under that name. The *Release ZIP* workflow runs the tests, builds it and attaches it when a release is published; it fails if `plugin.json`, `plugin.py` and `contract.py` do not all state the release's version.
 
 ## License
 

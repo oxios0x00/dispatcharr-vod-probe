@@ -2,13 +2,53 @@
 the pause flag and the progress of the current or last run.
 
 A plugin cannot declare Django models, so this follows vod-manager: one file
-in the plugin's own data directory. Probe results themselves are not kept
-here, they go into the relations' custom_properties."""
+in a vod_probe_data folder next to the plugin's own folder. Not inside it:
+updating a plugin replaces its whole folder (Dispatcharr renames the old one
+to a backup and deletes it once the new version is in place), and Dispatcharr
+has no other place for a plugin's data. A sibling folder survives the update.
+Probe results themselves are not kept here, they go into the relations'
+custom_properties."""
 import json
 import os
+import shutil
 import sqlite3
 import time
 from contextlib import contextmanager
+
+DATA_DIR_NAME = "vod_probe_data"
+STATE_FILE = "state.sqlite3"
+
+
+def data_dir_for(plugin_dir, environ=None):
+    """Where the state lives: VOD_PROBE_DATA_DIR when set, otherwise a
+    vod_probe_data folder next to the plugin's folder (in Dispatcharr's
+    plugins directory, which ignores a folder with no plugin.py in it)."""
+    environ = os.environ if environ is None else environ
+    return environ.get("VOD_PROBE_DATA_DIR") or os.path.join(os.path.dirname(plugin_dir), DATA_DIR_NAME)
+
+
+def move_legacy_state(plugin_dir, data_dir):
+    """Up to 0.10.0 the state lived in the plugin's own data/ folder. Moves it
+    once to data_dir, unless data_dir already has a state. Returns True when
+    something was moved. Safe when two processes start at the same time: the
+    main file moves last, so its presence at the new place means it is done."""
+    old_dir = os.path.join(plugin_dir, "data")
+    old = os.path.join(old_dir, STATE_FILE)
+    if not os.path.exists(old) or os.path.exists(os.path.join(data_dir, STATE_FILE)):
+        return False
+    os.makedirs(data_dir, exist_ok=True)
+    moved = False
+    for suffix in ("-wal", "-shm", ""):
+        try:
+            shutil.move(old + suffix, os.path.join(data_dir, STATE_FILE + suffix))
+            moved = True
+        except FileNotFoundError:
+            pass  # no such file, or another process moved it first
+    try:
+        os.rmdir(old_dir)
+    except OSError:
+        pass  # not empty, or already gone
+    return moved
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS plugin_state (
@@ -26,7 +66,7 @@ CREATE TABLE IF NOT EXISTS run_locks (
 class State:
     def __init__(self, data_dir):
         os.makedirs(data_dir, exist_ok=True)
-        self.db_path = os.path.join(data_dir, "state.sqlite3")
+        self.db_path = os.path.join(data_dir, STATE_FILE)
         with self._connect() as conn:
             conn.executescript(SCHEMA)
 

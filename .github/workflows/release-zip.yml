@@ -1,0 +1,46 @@
+# Attaches vod_probe.zip to each GitHub release. The Dispatcharr plugin
+# registry downloads it from
+#   https://github.com/oxios0x00/dispatcharr-vod-probe/releases/download/v{version}/vod_probe.zip
+# and users can import it by hand. Run it by hand to add the ZIP to a release
+# published before this workflow existed.
+name: Release ZIP
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag, e.g. v0.10.0"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  zip:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Test
+        run: |
+          pip install pytest
+          python -m pytest -q
+
+      - name: Build
+        # Fails when plugin.json, plugin.py or contract.py state another version than the tag.
+        run: python scripts/build_zip.py --version "${TAG#v}"
+
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" dist/vod_probe.zip --clobber
