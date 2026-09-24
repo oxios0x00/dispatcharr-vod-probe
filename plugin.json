@@ -10,7 +10,7 @@
       "label": "Dry run (probe, but write nothing)",
       "type": "boolean",
       "default": true,
-      "help_text": "ON (default): probes for real and reports what would be written. OFF: writes quality, resolution and probe into each probed relation's custom_properties."
+      "help_text": "ON: probes for real, writes nothing. OFF: writes to custom_properties."
     },
     {
       "id": "batch_limit",
@@ -18,21 +18,21 @@
       "type": "number",
       "default": 25,
       "min": 0,
-      "help_text": "A run handles a random sample of this many due movie relations and series versions (a series version is one unit, all its seasons). 0 = everything due: use it for the big first pass, then let small daily runs pick up only what is new."
+      "help_text": "How many due relations a run handles. 0 = everything due (use for the first pass)."
     },
     {
       "id": "only_relation_ids",
       "label": "Only these movie relation ids",
       "type": "string",
       "default": "",
-      "help_text": "Comma-separated. When set, Probe Run probes exactly these relations, even if already probed, and no series. Leave empty for the normal selection."
+      "help_text": "Comma-separated. Probes exactly these instead of the normal selection. Leave empty otherwise."
     },
     {
       "id": "only_series_relation_ids",
       "label": "Only these series relation ids",
       "type": "string",
       "default": "",
-      "help_text": "Comma-separated series relation ids (one per version of a series). When set, Probe Run handles exactly these, and no movies, and probes them again even if they are already done. Leave empty for the normal selection."
+      "help_text": "Comma-separated. Probes exactly these series versions instead of the normal selection. Leave empty otherwise."
     },
     {
       "id": "episode_probing",
@@ -53,7 +53,7 @@
           "label": "Every episode individually"
         }
       ],
-      "help_text": "Either way, every episode ends up with quality info. The others get a copy of a probed episode's result, marked status 'inferred' (with inferred_from). Each version of a series (standard, 4K...) is sampled on its own. 'One per series version' assumes the files of a version are alike whatever the season; 'One per season' checks each season, which costs one probe more per extra season and catches a season encoded differently. Cost, measured on a small sample: about 1.2 s per probe. About 900 series versions with 1 to 2 seasons is 900 to 1,200 probes (15 to 25 minutes), and with 10 seasons each it is 9,000 (3 hours) per season against 900 per series; 'Every episode' is one probe per episode, several hours. Loading the episode list is needed in every case: one provider request per series version, around 0.3 to 0.5 s each. Moving to a more thorough choice redoes the series already done; moving to a lighter one leaves them as they are."
+      "help_text": "Every episode gets quality info either way; the rest are copied from a probed one and marked 'inferred'. See the README for cost and details."
     },
     {
       "id": "max_concurrent_probes",
@@ -61,7 +61,7 @@
       "type": "number",
       "default": 1,
       "min": 1,
-      "help_text": "Probing uses a real stream connection: stay below the provider's connection limit."
+      "help_text": "Stay below the provider's connection limit."
     },
     {
       "id": "max_probes_per_second",
@@ -77,14 +77,14 @@
       "type": "number",
       "default": 0.8,
       "min": 0,
-      "help_text": "Checked after 5 probes. The run pauses itself instead of hammering a failing provider. Probes retried after Retry Errors (or the switch) are not counted: they are known dead links."
+      "help_text": "Pauses the run automatically past this ratio (checked after 5 probes)."
     },
     {
       "id": "retry_errors_next_schedule",
       "label": "Retry errors at the next scheduled run",
       "type": "boolean",
       "default": false,
-      "help_text": "A failed probe is never retried on its own. Turn this on and the next scheduled run (not a manual one, use Retry Errors for that) flags every failed relation and tries it again, then the switch turns itself off. It is read when the run starts, so no new Apply is needed. A run in Dry run mode leaves it on."
+      "help_text": "Retries every failed relation at the next scheduled run, then turns itself off. For a manual retry, use Retry Errors."
     },
     {
       "id": "probe_timeout_seconds",
@@ -99,22 +99,14 @@
       "label": "Schedule (5-field cron)",
       "type": "string",
       "default": "",
-      "help_text": "'minute hour day-of-month month day-of-week', for example '0 4 * * *' for every day at 04:00. Empty (the default) means no schedule: Apply then removes any existing one. A scheduled run handles everything due, whatever the per-run limit, so it is the small daily run once the big first pass is done. The settings are copied when Apply is clicked: click it again after changing any."
-    },
-    {
-      "id": "schedule_timezone",
-      "label": "Schedule timezone",
-      "type": "string",
-      "default": "",
-      "placeholder": "Europe/Paris",
-      "help_text": "IANA timezone name. Empty means UTC."
+      "help_text": "'minute hour day-of-month month day-of-week', e.g. '0 4 * * *' for every day at 04:00, in Dispatcharr's time zone. Empty = no schedule. Click Apply after changing."
     }
   ],
   "actions": [
     {
       "id": "probe_run",
       "label": "Probe Run",
-      "description": "Starts a background run that probes due movie relations and loads and probes series versions (see Episodes setting). With Dry run on it writes nothing and loads no episodes. The click returns at once; follow it with Run Status.",
+      "description": "Starts a background run over due movies and series. Follow it with Run Status.",
       "button_label": "Run",
       "button_variant": "filled",
       "button_color": "green"
@@ -122,7 +114,7 @@
     {
       "id": "run_status",
       "label": "Run Status",
-      "description": "Whether a run is going, its progress, or the result of the last one.",
+      "description": "Progress of the current run, or the result of the last one.",
       "button_label": "Status",
       "button_variant": "outline",
       "button_color": "blue"
@@ -130,7 +122,7 @@
     {
       "id": "retry_errors",
       "label": "Retry Errors",
-      "description": "A failed probe is never retried on its own. This flags every failed relation (and the series of a failed episode, and series versions left pending) so the next run, scheduled or manual, tries them again. Runs in the background; the result appears in the notification centre and in Run Status.",
+      "description": "Flags every failed relation so the next run tries them again. See README.",
       "button_label": "Retry",
       "button_variant": "outline",
       "button_color": "orange"
@@ -138,7 +130,7 @@
     {
       "id": "reload_incomplete",
       "label": "Reload Incomplete Series",
-      "description": "Dispatcharr marks a series' episodes as loaded even when the provider's answer was partial, and never checks again. This finds the series versions holding fewer episodes than another version of the same series, asks the provider how many it lists, and flags those where it lists more: the next run asks for their episode list again. A real difference between versions is left alone. Runs in the background; a dry run only reports.",
+      "description": "Finds series versions with a suspiciously short episode list and flags them for reload. See README.",
       "button_label": "Check",
       "button_variant": "outline",
       "button_color": "orange"
@@ -146,7 +138,7 @@
     {
       "id": "pause",
       "label": "Pause",
-      "description": "Stops the current run after the relation in progress and blocks new runs until Resume.",
+      "description": "Stops the current run after the relation in progress; blocks new runs until Resume.",
       "button_label": "Pause",
       "button_variant": "outline",
       "button_color": "orange"
@@ -162,7 +154,7 @@
     {
       "id": "scan",
       "label": "Scan",
-      "description": "Counts the relations due for a probe and why. Runs in the background; the result appears in the notification centre and in Run Status. Writes nothing.",
+      "description": "Counts the relations due for a probe and why. Writes nothing.",
       "button_label": "Scan",
       "button_variant": "outline",
       "button_color": "blue"
@@ -170,7 +162,7 @@
     {
       "id": "coverage",
       "label": "Coverage Stats",
-      "description": "Share of relations already probed, split into measured and inferred, with the tiers found. Runs in the background; the result appears in the notification centre and in Run Status.",
+      "description": "Share of relations already probed, measured vs. inferred, with tiers found.",
       "button_label": "Stats",
       "button_variant": "outline",
       "button_color": "blue"
@@ -178,7 +170,7 @@
     {
       "id": "apply_schedule",
       "label": "[SCHEDULE] Apply",
-      "description": "Registers or updates the periodic Probe Run from the schedule settings (and copies the current settings, Dry run included).",
+      "description": "Registers or updates the periodic Probe Run from the settings above.",
       "button_label": "Apply",
       "button_variant": "outline",
       "button_color": "blue"
@@ -203,14 +195,6 @@
       "button_label": "Status",
       "button_variant": "outline",
       "button_color": "blue"
-    },
-    {
-      "id": "test_fire_schedule",
-      "label": "[SCHEDULE] Test Fire Now",
-      "description": "Runs the scheduled Probe Run now, as the timer would (everything due, no per-run limit).",
-      "button_label": "Test Fire",
-      "button_variant": "outline",
-      "button_color": "grape"
     }
   ]
 }

@@ -185,7 +185,6 @@ Keep **Dry run** on for the first steps.
 | Retry errors at the next scheduled run | off | One-shot: the next scheduled run tries the failed relations again, then the switch turns itself off. |
 | Probe timeout (seconds) | 25 | `ffprobe` gives up after this delay. |
 | Schedule (5-field cron) | empty | Empty means no schedule. See [Scheduling](#scheduling). |
-| Schedule timezone | UTC | An IANA name, such as `Europe/Paris`. |
 
 ## Actions
 
@@ -198,7 +197,7 @@ Keep **Dry run** on for the first steps.
 | **Reload Incomplete Series** | Finds series versions holding fewer episodes than another version of the same series, asks the provider how many it lists, and flags those where it lists more, so the next run asks for their episode list again. Background task; a dry run only reports. See [Incomplete episode lists](#incomplete-episode-lists). |
 | **Scan** | Counts what is due and why. Writes nothing. |
 | **Coverage Stats** | How many relations have an answer, split into measured and inferred, with the tiers found. |
-| **[SCHEDULE] Apply / Remove / Status / Test Fire Now** | Manage the periodic run. |
+| **[SCHEDULE] Apply / Remove / Status** | Manage the periodic run. |
 
 **Scan**, **Coverage Stats**, **Retry Errors** and **Reload Incomplete Series** also run in the background, because they read every relation. The click returns at once; the result of Scan, Coverage Stats and Retry Errors appears in Dispatcharr's notification centre and at the end of **Run Status**. A notification is also sent when a run ends.
 
@@ -206,9 +205,8 @@ Keep **Dry run** on for the first steps.
 
 Dispatcharr has no scheduling API for plugins, so VOD Probe registers a `django-celery-beat` periodic task, the same way other plugins do.
 
-- Set **Schedule** to a cron expression (`0 4 * * *` is every day at 04:00), then click **[SCHEDULE] Apply**. An empty schedule means no schedule: Apply then removes any existing one.
+- Set **Schedule** to a cron expression (`0 4 * * *` is every day at 04:00), then click **[SCHEDULE] Apply**. The time is read in the time zone set in Dispatcharr's System Settings, like Dispatcharr's own schedules; notification titles show the time in the same zone. An empty schedule means no schedule: Apply then removes any existing one.
 - The settings are **copied when you click Apply**, so click it again after changing one. The exceptions are the retry switch, which is read live when the run starts, and the per-run limit and the id lists, which a scheduled run always ignores: it handles everything due.
-- **Test Fire Now** runs the scheduled action immediately, as the timer would.
 
 ## Good to know
 
@@ -264,14 +262,14 @@ The plugin relies on parts of Dispatcharr that are not a public API, so an updat
 
 - the models `M3UMovieRelation`, `M3USeriesRelation`, `M3UEpisodeRelation` and `M3UVODCategoryRelation` (`apps.vod.models`), including the fields `custom_properties`, `last_episode_refresh` and `series_relation`;
 - `refresh_series_episodes` (`apps.vod.tasks`), the function that loads a series' episodes;
-- the Xtream client (`core.xtream_codes`) and `SystemNotification` (`core.models`);
+- the Xtream client (`core.xtream_codes`), `SystemNotification` and `CoreSettings.get_system_time_zone()` (`core.models`);
 - `django-celery-beat` and the `dvr` Celery queue.
 
 If a run fails after a Dispatcharr update, look at these first.
 
 ## Status
 
-Version 0.9.1. Tested on a Dispatcharr 0.31.0 test instance with a single Xtream Codes provider, on both movies and series, including a full first pass, disabling and re-enabling groups, failed probes and retries. Not tested on a production instance, with several providers, or with a concurrency above 1. The scheduled trigger itself (the timer firing on its own) has not been observed yet; **Test Fire Now** exercises the same code path.
+Version 0.9.1. Tested on a Dispatcharr 0.31.0 test instance with a single Xtream Codes provider, on both movies and series, including a full first pass, disabling and re-enabling groups, failed probes and retries, and the scheduled trigger firing on its own with the retry switch on. Not tested on a production instance, with several providers, or with a concurrency above 1.
 
 ## Development
 

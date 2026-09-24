@@ -131,8 +131,6 @@ class Plugin:
                 return self._remove_schedule()
             if action_id == "schedule_status":
                 return self._schedule_status()
-            if action_id == "test_fire_schedule":
-                return self._test_fire_schedule(settings)
             return {"status": "error", "message": f"Unknown action '{action_id}'"}
         finally:
             _release_db_connections()
@@ -182,7 +180,10 @@ class Plugin:
         handler = {"scan": lambda: self._scan(settings), "coverage": self._coverage, "retry_errors": self._retry_errors}[action_id]
         result = handler()
         self.state.set("report", {"action": action_id, "at": time.time(), "message": result["message"]})
-        self._notify(result["message"], False, title=f"VOD Probe: {self._REPORT_ACTIONS[action_id]}", prefix=f"{self._REPORT_KEY_PREFIX}{action_id}-")
+        self._notify(
+            result["message"], False, title=f"VOD Probe: {self._REPORT_ACTIONS[action_id]}",
+            prefix=f"{self._REPORT_KEY_PREFIX}{action_id}-",
+        )
         return result
 
     def _busy_message(self, held_since):
@@ -217,20 +218,15 @@ class Plugin:
             # Empty means no schedule: Apply then also removes one that exists.
             removed = self._remove_schedule()
             return {"status": "ok", "message": f"Schedule is empty, so there is none. {removed['message']}"}
-        tz_str = (settings.get("schedule_timezone") or "").strip() or "UTC"
+        # Like Dispatcharr's own cron schedules (core.scheduling), the time is read
+        # in the system time zone set in Dispatcharr's settings.
+        tz_str = self._system_timezone()
         fields = cron_expr.split()
         if len(fields) != 5:
             return {
                 "status": "error",
                 "message": f"Cron expression must have 5 fields (minute hour day-of-month month day-of-week), got: {cron_expr!r}",
             }
-        try:
-            import pytz
-
-            if tz_str not in pytz.all_timezones_set:
-                return {"status": "error", "message": f"Unknown timezone: {tz_str}"}
-        except ImportError:
-            pass  # let CrontabSchedule validate it
         try:
             from django_celery_beat.models import CrontabSchedule, PeriodicTask
         except ImportError as exc:
@@ -297,23 +293,6 @@ class Plugin:
                 f"last run: {last_run} | total runs: {task.total_run_count}"
             ),
         }
-
-    def _test_fire_schedule(self, settings):
-        if self.state.is_paused():
-            return {"status": "error", "message": "Paused: use Resume first."}
-        held_since = self.state.lock_held_since(self._LOCK, self._LOCK_STALE_SECONDS)
-        if held_since:
-            return self._busy_message(held_since)
-        task_fn = globals().get("_vod_probe_task")
-        if task_fn is None:
-            return {"status": "error", "message": "Background task failed to register at plugin load — check server logs."}
-        try:
-            async_result = task_fn.apply_async(
-                kwargs={"action": "probe_run", "settings": self._schedule_snapshot(settings), "scheduled": True}, queue="dvr"
-            )
-        except Exception as exc:  # noqa: BLE001 - reported to the user
-            return {"status": "error", "message": f"Failed to queue the run: {exc}"}
-        return {"status": "ok", "message": f"Test fire queued (task {async_result.id}). Follow it with Run Status."}
 
     # --- selection ---------------------------------------------------------
 
@@ -507,7 +486,7 @@ class Plugin:
         self.state.set("run", progress)
         message = self._describe(progress)
         logger.info("Probe Run finished: %s", message)
-        self._notify(message, stopped)
+        self._notify(self._describe(progress, short=True), stopped)
         return {"status": "ok", "message": message}
 
     def _run_unit(self, kind, unit_id, settings, timeout, limiter, now, logger, dry_run, force=False):
@@ -690,34 +669,37 @@ class Plugin:
         return written
 
     @staticmethod
-    def _describe(progress):
-        tiers = ", ".join(f"{t} {n}" for t, n in sorted(progress["tiers"].items())) or "none"
+    def _describe(progress, short=False):
+        """`short` is for the pop-up notification (one line, no room for
+        detail); the full version is for Run Status, read on demand."""
         probes = progress["probed"] + progress["errors"]
         seconds = probes and progress["seconds"] / probes
-        head = "Dry run, nothing written." if progress["dry_run"] else "WROTE to the catalogue."
-        text = (
-            f"{head} Handled {progress['processed']} of {progress['total']} movie/series relations "
-            f"({progress['available']} due): {progress['probed']} probed, {progress['inferred']} episodes "
-            f"{'would be ' if progress['dry_run'] else ''}inferred, {progress['loaded']} series loaded, "
-            f"{progress['errors']} errors, {seconds:.1f}s per probe on average. Tiers measured: {tiers}."
-        )
-        if progress.get("retried"):
-            text += (
-                f" {progress['retried']} were retries of an earlier failure ({progress['retried_errors']} failed again); "
-                "they do not count towards the circuit breaker."
-            )
-        if progress["error_examples"]:
-            text += " Errors: " + "; ".join(progress["error_examples"]) + "."
+        head = "Dry run" if progress["dry_run"] else "Wrote"
+        parts = [
+            f"{head}: {progress['probed']} probed, {progress['errors']} errors, {progress['inferred']} inferred "
+            f"({progress['processed']}/{progress['total']} of {progress['available']} due), {seconds:.1f}s/probe"
+        ]
         if progress["note"]:
-            text += f" Stopped: {progress['note']}."
-        return text
+            parts.append(f"Stopped: {progress['note']}")
+        if short:
+            if not progress["dry_run"] or progress["note"]:
+                parts.append("See Run Status for details")
+            return " | ".join(parts)
+        tiers = ", ".join(f"{t} {n}" for t, n in sorted(progress["tiers"].items())) or "none"
+        parts.append(f"Tiers: {tiers}")
+        if progress.get("retried"):
+            parts.append(f"{progress['retried']} retries ({progress['retried_errors']} failed again)")
+        if progress["error_examples"]:
+            parts.append("e.g. " + progress["error_examples"][0])
+        return " | ".join(parts)
 
     def _run_status(self):
         result = self._run_progress()
         report = self.state.get("report")
         if report:
             when = datetime.fromtimestamp(report["at"]).strftime("%Y-%m-%d %H:%M")
-            result["message"] += f" | Last report, {self._REPORT_ACTIONS.get(report['action'], report['action'])} ({when}): {report['message']}"
+            label = self._REPORT_ACTIONS.get(report["action"], report["action"])
+            result["message"] += f" || Last report — {label} ({when}): {report['message']}"
         return result
 
     def _run_progress(self):
@@ -736,6 +718,30 @@ class Plugin:
             }
         return {"status": "ok", "message": f"Last run{paused}: {self._describe(progress)}"}
 
+    @staticmethod
+    def _system_timezone():
+        """The time zone set in Dispatcharr's System Settings, UTC when unknown."""
+        try:
+            from core.models import CoreSettings
+
+            return CoreSettings.get_system_time_zone() or "UTC"
+        except Exception:  # noqa: BLE001 - older Dispatcharr, or settings unreadable
+            return "UTC"
+
+    @classmethod
+    def _clock(cls):
+        """Current time for a notification title: Dispatcharr's notification
+        centre shows only the date. In the system time zone; UTC is named."""
+        from zoneinfo import ZoneInfo
+
+        tz_str = cls._system_timezone()
+        if tz_str != "UTC":
+            try:
+                return datetime.now(ZoneInfo(tz_str)).strftime("%H:%M")
+            except Exception:  # noqa: BLE001 - an unknown time zone falls back to UTC
+                pass
+        return datetime.now(timezone.utc).strftime("%H:%M UTC")
+
     def _notify(self, message, stopped, title=None, prefix=None):
         import logging
 
@@ -746,11 +752,13 @@ class Plugin:
             prefix = prefix or self._NOTIFICATION_KEY_PREFIX
             SystemNotification.objects.filter(notification_key__startswith=prefix).delete()
             kind = SystemNotification.NotificationType
+            clock = self._clock()
+            title = title or f"VOD Probe: run {'stopped' if stopped else 'done'}"
             notification = SystemNotification.objects.create(
                 notification_key=f"{prefix}{int(time.time())}",
                 notification_type=kind.WARNING if stopped else kind.INFO,
                 priority=SystemNotification.Priority.HIGH,
-                title=title or f"VOD Probe: run {'stopped' if stopped else 'done'}",
+                title=f"{title} ({clock})",
                 message=message,
                 is_active=True,
                 admin_only=True,
@@ -773,10 +781,7 @@ class Plugin:
         detail = ", ".join(f"{labels[k]} {v}" for k, v in reasons.most_common()) or "none"
         return {
             "status": "ok",
-            "message": (
-                f"Movies to probe: {movies}. Series versions to handle: {len(due)} ({detail}); "
-                f"{reloads} need their episode list requested from the provider. Nothing was written."
-            ),
+            "message": f"{movies} movies, {len(due)} series versions due ({detail}), {reloads} need a reload.",
         }
 
     def _apply_retry_switch(self, settings, logger):
@@ -852,13 +857,8 @@ class Plugin:
                 else:
                     same += 1
                 self.state.renew_lock(self._LOCK)
-            verb = "would be flagged" if dry_run else "flagged"
-            message = (
-                f"Checked {len(suspects)} series versions holding fewer episodes than another version of the same series: "
-                f"{flagged} {verb} for reload (the provider lists more), {same} match the provider (a real difference), "
-                f"{errors} could not be checked."
-                + ("" if dry_run or not flagged else " The next run asks for their episode list again.")
-            )
+            verb = "would flag" if dry_run else "flagged"
+            message = f"Checked {len(suspects)} suspect series versions: {verb} {flagged}, {same} confirmed real, {errors} errors."
             logger.info("Reload Incomplete Series: %s", message)
             return {"status": "ok", "message": message}
         finally:
@@ -909,11 +909,10 @@ class Plugin:
             pct = f"{100 * answered / total:.0f}%" if total else "n/a"
             tier_text = ", ".join(f"{t} {n}" for t, n in tiers.most_common()) or "none yet"
             parts.append(
-                f"{label}: {answered}/{total} with an answer ({pct}: {buckets['ok']} measured, "
-                f"{buckets['inferred']} inferred), {buckets['error']} in error, {buckets['never']} never probed; "
-                f"tiers: {tier_text}"
+                f"{label}: {pct} answered ({buckets['ok']} measured, {buckets['inferred']} inferred), "
+                f"{buckets['error']} errors, {buckets['never']} never probed. Tiers: {tier_text}"
             )
-        return {"status": "ok", "message": " | ".join(parts)}
+        return {"status": "ok", "message": "\n".join(parts)}
 
 
 def _outcome(errors=0, error=None, probed=0, inferred=0, loaded=0, tiers=None, seconds=0.0, props=None, retried=0, retried_errors=0):
