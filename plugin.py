@@ -697,7 +697,7 @@ class Plugin:
         result = self._run_progress()
         report = self.state.get("report")
         if report:
-            when = datetime.fromtimestamp(report["at"]).strftime("%Y-%m-%d %H:%M")
+            when = self._local_time(report["at"], "%Y-%m-%d %H:%M")
             label = self._REPORT_ACTIONS.get(report["action"], report["action"])
             result["message"] += f" || Last report — {label} ({when}): {report['message']}"
         return result
@@ -729,18 +729,24 @@ class Plugin:
             return "UTC"
 
     @classmethod
-    def _clock(cls):
-        """Current time for a notification title: Dispatcharr's notification
-        centre shows only the date. In the system time zone; UTC is named."""
+    def _local_time(cls, timestamp, fmt):
+        """A timestamp formatted in Dispatcharr's system time zone, for texts
+        shown to the user. When that zone is UTC (or unknown), it says so."""
         from zoneinfo import ZoneInfo
 
         tz_str = cls._system_timezone()
         if tz_str != "UTC":
             try:
-                return datetime.now(ZoneInfo(tz_str)).strftime("%H:%M")
+                return datetime.fromtimestamp(timestamp, ZoneInfo(tz_str)).strftime(fmt)
             except Exception:  # noqa: BLE001 - an unknown time zone falls back to UTC
                 pass
-        return datetime.now(timezone.utc).strftime("%H:%M UTC")
+        return datetime.fromtimestamp(timestamp, timezone.utc).strftime(fmt) + " UTC"
+
+    @classmethod
+    def _clock(cls):
+        """Current time for a notification title: Dispatcharr's notification
+        centre shows only the date."""
+        return cls._local_time(time.time(), "%H:%M")
 
     def _notify(self, message, stopped, title=None, prefix=None):
         import logging
