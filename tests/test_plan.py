@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from contract import merge_failure, merge_inferred, merge_success
-from plan import MODE_ALL, MODE_FIRST, episodes_to_infer, plan_series
+from plan import MODE_ALL, MODE_FIRST, episodes_to_infer, next_batch, plan_series
 
 NOW = datetime(2026, 9, 21, 12, 0, 0, tzinfo=timezone.utc)
 RESULT = {"ok": True, "width": 1920, "height": 1080, "quality_label": "1080p", "video_codec": "h264",
@@ -93,3 +93,18 @@ def test_short_versions_are_those_below_a_sibling_and_above_zero():
 
     counts = {1: [(10, 32), (11, 16)], 2: [(20, 8), (21, 8)], 3: [(30, 12), (31, 0)], 4: [(40, 5)]}
     assert short_versions(counts) == [11]
+
+
+def test_next_batch_skips_what_the_run_already_handled():
+    due = [("movies", 1, False), ("movies", 2, False), ("series", 1, False), ("series", 7, True)]
+    assert next_batch(due, set(), 2) == (due[:2], 4)
+    done = {("movies", 1), ("movies", 2)}
+    assert next_batch(due, done, 2) == (due[2:], 2)
+    assert next_batch(due, done | {("series", 1), ("series", 7)}, 2) == ([], 0)
+    # a movie and a series may share an id
+    assert next_batch([("series", 1, False)], {("movies", 1)}, 5) == ([("series", 1, False)], 1)
+
+
+def test_next_batch_size_zero_takes_everything():
+    due = [("movies", n, False) for n in range(30)]
+    assert next_batch(due, set(), 0) == (due, 30)

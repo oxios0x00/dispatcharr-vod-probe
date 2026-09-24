@@ -71,7 +71,7 @@ class _RateLimiter:
 
 class Plugin:
     name = "VOD Probe"
-    version = "1.0.0"
+    version = "1.0.1"
     description = (
         "Probes the real quality of each VOD relation with ffprobe and writes it "
         "into the relation's custom_properties, so every tool reading "
@@ -85,7 +85,7 @@ class Plugin:
     _BACKGROUND_ACTIONS = {"probe_run", "reload_incomplete"}
     # Reports read every relation's JSON, so they also run in the background, with
     # no lock and no pause check: they change nothing but a few flags. The result
-    # goes to the notification centre and to Run Status.
+    # goes to the notification centre.
     _REPORT_ACTIONS = {"scan": "Scan", "coverage": "Coverage Stats", "retry_errors": "Retry Errors"}
     _REPORT_KEY_PREFIX = "vod-probe-report-"
     _LOCK = "probe_run"
@@ -119,7 +119,12 @@ class Plugin:
             if action_id == "probe_run":
                 return self._probe_run(settings, scheduled=bool(context.get("scheduled")))
             if action_id == "reload_incomplete":
-                return self._reload_incomplete(settings)
+                result = self._reload_incomplete(settings)
+                self._notify(
+                    result["message"], result.get("status") == "error", title="VOD Probe: Reload Incomplete Series",
+                    prefix=f"{self._REPORT_KEY_PREFIX}reload_incomplete-",
+                )
+                return result
             if action_id in self._REPORT_ACTIONS:
                 if not context.get("background"):
                     return self._start_report(action_id, settings)
@@ -180,13 +185,12 @@ class Plugin:
             return {"status": "error", "message": f"Failed to queue the report: {exc}"}
         return {
             "status": "ok",
-            "message": f"{self._REPORT_ACTIONS[action_id]} started in the background. The result appears in the notification centre and in Run Status.",
+            "message": f"{self._REPORT_ACTIONS[action_id]} started in the background. The result appears in the notification centre.",
         }
 
     def _run_report(self, action_id, settings):
         handler = {"scan": lambda: self._scan(settings), "coverage": self._coverage, "retry_errors": self._retry_errors}[action_id]
         result = handler()
-        self.state.set("report", {"action": action_id, "at": time.time(), "message": result["message"]})
         self._notify(
             result["message"], False, title=f"VOD Probe: {self._REPORT_ACTIONS[action_id]}",
             prefix=f"{self._REPORT_KEY_PREFIX}{action_id}-",
@@ -211,12 +215,12 @@ class Plugin:
     # registers its own django-celery-beat PeriodicTask, which queues the same
     # Celery task as the Probe Run button. The settings are copied when Apply is
     # clicked, so changing a setting afterwards needs Apply again. A scheduled
-    # run always handles everything due (no per-run limit) and never a fixed list
-    # of ids: it is the small daily run that picks up what is new.
+    # run, like any run, handles everything due, and never a fixed list of ids:
+    # it is the small daily run that picks up what is new.
 
     def _schedule_snapshot(self, settings):
         snapshot = {k: v for k, v in (settings or {}).items() if not k.startswith("schedule_")}
-        snapshot.update(batch_limit=0, only_relation_ids="", only_series_relation_ids="")
+        snapshot.update(only_relation_ids="", only_series_relation_ids="")
         return snapshot
 
     def _apply_schedule(self, settings):
@@ -426,10 +430,15 @@ class Plugin:
             self.state.release_lock(self._LOCK)
 
     def _run_pass(self, settings, logger):
+        """Everything due, batch after batch, like vod-manager's Process: the
+        run only stops when nothing is left, on Pause, or when the circuit
+        breaker trips. Between batches it hands its database connection back
+        and reads what is due again."""
         from .breaker import tripped as breaker_tripped
         from .contract import scrub_error
+        from .plan import next_batch
 
-        limit = int(settings.get("batch_limit", 25) or 0)
+        batch_size = int(settings.get("batch_limit", 25) or 0)
         max_concurrent = max(1, int(settings.get("max_concurrent_probes", 1) or 1))
         limiter = _RateLimiter(float(settings.get("max_probes_per_second", 2) or 0))
         breaker_ratio = float(settings.get("circuit_breaker_error_ratio", 0.8) or 0.8)
@@ -437,55 +446,64 @@ class Plugin:
         dry_run = bool(settings.get("dry_run", True))
         now = datetime.now(timezone.utc)
 
-        units = self._units(settings)
-        available = len(units)
-        if limit > 0 and available > limit:
-            import random
-
-            units = random.sample(units, limit)
+        done = set()
+        batch, remaining = next_batch(self._units(settings), done, batch_size)
         progress = {
-            "started": time.time(), "finished": None, "dry_run": dry_run, "available": available,
-            "total": len(units), "processed": 0, "errors": 0, "probed": 0, "inferred": 0, "loaded": 0, "retried": 0, "retried_errors": 0,
-            "tiers": {}, "error_examples": [], "seconds": 0.0, "note": "",
+            "started": time.time(), "finished": None, "dry_run": dry_run, "available": remaining,
+            "total": remaining, "batches": 0, "processed": 0, "errors": 0, "probed": 0, "inferred": 0, "loaded": 0,
+            "retried": 0, "retried_errors": 0, "tiers": {}, "error_examples": [], "seconds": 0.0, "note": "",
         }
         self.state.set("run", progress)
         tiers = Counter()
         stopped = False
 
         with ThreadPoolExecutor(max_workers=max_concurrent) as pool:
-            futures = {
-                pool.submit(self._run_unit, kind, uid, settings, timeout, limiter, now, logger, dry_run, force): (kind, uid)
-                for kind, uid, force in units
-            }
-            for future in as_completed(futures):
-                if future.cancelled():
-                    continue
-                kind, uid = futures[future]
-                try:
-                    outcome = future.result()
-                except Exception as exc:  # noqa: BLE001 - counted, never fatal for the pass
-                    outcome = _outcome(errors=1, error=scrub_error(f"{type(exc).__name__}: {exc}"))
-                progress["processed"] += 1
-                for key in ("errors", "probed", "inferred", "loaded", "retried", "retried_errors"):
-                    progress[key] += outcome[key]
-                progress["seconds"] += outcome["seconds"]
-                tiers.update(outcome["tiers"])
-                if outcome["error"] and len(progress["error_examples"]) < 3:
-                    progress["error_examples"].append(f"{kind} {uid}: {outcome['error'][:120]}")
-                progress["tiers"] = dict(tiers)
+            while batch and not stopped:
+                if self.state.is_paused():
+                    stopped = True
+                    break
+                progress["batches"] += 1
+                futures = {
+                    pool.submit(self._run_unit, kind, uid, settings, timeout, limiter, now, logger, dry_run, force): (kind, uid)
+                    for kind, uid, force in batch
+                }
+                for future in as_completed(futures):
+                    if future.cancelled():
+                        continue
+                    kind, uid = futures[future]
+                    try:
+                        outcome = future.result()
+                    except Exception as exc:  # noqa: BLE001 - counted, never fatal for the pass
+                        outcome = _outcome(errors=1, error=scrub_error(f"{type(exc).__name__}: {exc}"))
+                    progress["processed"] += 1
+                    for key in ("errors", "probed", "inferred", "loaded", "retried", "retried_errors"):
+                        progress[key] += outcome[key]
+                    progress["seconds"] += outcome["seconds"]
+                    tiers.update(outcome["tiers"])
+                    if outcome["error"] and len(progress["error_examples"]) < 3:
+                        progress["error_examples"].append(f"{kind} {uid}: {outcome['error'][:120]}")
+                    progress["tiers"] = dict(tiers)
+                    self.state.set("run", progress)
+                    self.state.renew_lock(self._LOCK)
+
+                    tripped = breaker_tripped(
+                        progress["probed"], progress["errors"], progress["retried"], progress["retried_errors"], breaker_ratio
+                    )
+                    if (self.state.is_paused() or tripped) and not stopped:
+                        stopped = True
+                        if tripped:
+                            self.state.set_paused(True)
+                            progress["note"] = "circuit breaker tripped, paused"
+                        for pending in futures:
+                            pending.cancel()
+                done.update((kind, uid) for kind, uid, _ in batch)
+                if stopped:
+                    break
+                _release_db_connections()
+                batch, remaining = next_batch(self._units(settings), done, batch_size)
+                progress["total"] = progress["processed"] + remaining
                 self.state.set("run", progress)
                 self.state.renew_lock(self._LOCK)
-
-                tripped = breaker_tripped(
-                    progress["probed"], progress["errors"], progress["retried"], progress["retried_errors"], breaker_ratio
-                )
-                if (self.state.is_paused() or tripped) and not stopped:
-                    stopped = True
-                    if tripped:
-                        self.state.set_paused(True)
-                        progress["note"] = "circuit breaker tripped, paused"
-                    for pending in futures:
-                        pending.cancel()
 
         progress["finished"] = time.time()
         if stopped and not progress["note"]:
@@ -675,8 +693,17 @@ class Plugin:
                 written += len(objects)
         return written
 
-    @staticmethod
-    def _describe(progress, short=False):
+    _TIER_ORDER = ("2160p", "1080p", "720p", "480p", "sd", "unknown")
+
+    @classmethod
+    def _tier_text(cls, counts):
+        """Tier counts from the best to the worst: "2160p 204, 1080p 375"."""
+        rank = {tier: i for i, tier in enumerate(cls._TIER_ORDER)}
+        ordered = sorted(counts.items(), key=lambda item: rank.get(item[0], len(rank)))
+        return ", ".join(f"{tier} {n}" for tier, n in ordered if n)
+
+    @classmethod
+    def _describe(cls, progress, short=False):
         """`short` is for the pop-up notification (one line, no room for
         detail); the full version is for Run Status, read on demand."""
         probes = progress["probed"] + progress["errors"]
@@ -684,7 +711,7 @@ class Plugin:
         head = "Dry run" if progress["dry_run"] else "Wrote"
         parts = [
             f"{head}: {progress['probed']} probed, {progress['errors']} errors, {progress['inferred']} inferred "
-            f"({progress['processed']}/{progress['total']} of {progress['available']} due), {seconds:.1f}s/probe"
+            f"({progress['processed']}/{progress['total']} handled), {seconds:.1f}s/probe"
         ]
         if progress["note"]:
             parts.append(f"Stopped: {progress['note']}")
@@ -692,8 +719,7 @@ class Plugin:
             if not progress["dry_run"] or progress["note"]:
                 parts.append("See Run Status for details")
             return " | ".join(parts)
-        tiers = ", ".join(f"{t} {n}" for t, n in sorted(progress["tiers"].items())) or "none"
-        parts.append(f"Tiers: {tiers}")
+        parts.append(f"Tiers: {cls._tier_text(progress['tiers']) or 'none'}")
         if progress.get("retried"):
             parts.append(f"{progress['retried']} retries ({progress['retried_errors']} failed again)")
         if progress["error_examples"]:
@@ -701,29 +727,26 @@ class Plugin:
         return " | ".join(parts)
 
     def _run_status(self):
-        result = self._run_progress()
-        report = self.state.get("report")
-        if report:
-            when = self._local_time(report["at"], "%Y-%m-%d %H:%M")
-            label = self._REPORT_ACTIONS.get(report["action"], report["action"])
-            result["message"] += f" || Last report — {label} ({when}): {report['message']}"
-        return result
-
-    def _run_progress(self):
+        """The run in flight, or the last one. The reports (Scan, Coverage Stats,
+        Retry Errors, Reload Incomplete Series) are in the notification centre."""
         progress = self.state.get("run")
         held_since = self.state.lock_held_since(self._LOCK, self._LOCK_STALE_SECONDS)
-        paused = " [PAUSED]" if self.state.is_paused() else ""
-        if not progress:
-            return {"status": "ok", "message": f"No run yet.{paused}"}
+        paused = self.state.is_paused()
         if held_since:
-            return {
-                "status": "ok",
-                "message": (
-                    f"[RUNNING, last activity {int(time.time() - held_since)}s ago]{paused} "
-                    f"{progress['processed']}/{progress['total']} probed, {progress['errors']} errors."
-                ),
-            }
-        return {"status": "ok", "message": f"Last run{paused}: {self._describe(progress)}"}
+            idle = int(time.time() - held_since)
+            if progress and progress.get("finished") is None:
+                state = "Pausing" if paused else "Running"
+                return {"status": "ok", "message": (
+                    f"{state}: {progress['processed']}/{progress['total']} handled, "
+                    f"{progress['errors']} errors (last activity {idle}s ago)"
+                )}
+            # The same lock covers the other long job.
+            return {"status": "ok", "message": f"Reload Incomplete Series is running (last activity {idle}s ago)"}
+        suffix = " | Paused: use Resume" if paused else ""
+        if not progress:
+            return {"status": "ok", "message": f"No run yet{suffix}"}
+        when = self._local_time(progress.get("finished") or progress["started"], "%Y-%m-%d %H:%M")
+        return {"status": "ok", "message": f"Last run {when} · {self._describe(progress)}{suffix}"}
 
     @staticmethod
     def _system_timezone():
@@ -920,12 +943,11 @@ class Plugin:
             total = sum(buckets.values())
             answered = buckets["ok"] + buckets["inferred"]
             pct = f"{100 * answered / total:.0f}%" if total else "n/a"
-            tier_text = ", ".join(f"{t} {n}" for t, n in tiers.most_common()) or "none yet"
-            parts.append(
-                f"{label}: {pct} answered ({buckets['ok']} measured, {buckets['inferred']} inferred), "
-                f"{buckets['error']} errors, {buckets['never']} never probed. Tiers: {tier_text}"
-            )
-        return {"status": "ok", "message": "\n".join(parts)}
+            counts = [f"{buckets['ok']} measured"]
+            counts += [f"{buckets[key]} {name}" for key, name in (("inferred", "inferred"), ("error", "errors"), ("never", "never probed")) if buckets[key]]
+            tier_text = self._tier_text(tiers)
+            parts.append(f"{label.capitalize()} {pct} answered: {', '.join(counts)}" + (f" · {tier_text}" if tier_text else ""))
+        return {"status": "ok", "message": " | ".join(parts)}
 
 
 def _outcome(errors=0, error=None, probed=0, inferred=0, loaded=0, tiers=None, seconds=0.0, props=None, retried=0, retried_errors=0):

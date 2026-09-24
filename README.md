@@ -169,20 +169,19 @@ To uninstall, click **[SCHEDULE] Remove** first (otherwise Celery keeps a nightl
 
 ## Quick start
 
-Keep **Dry run** on for the first steps.
+Keep **Dry run** on for the first step.
 
 1. **Scan** counts what is due: movies to probe, and series versions to handle with the reason for each. Nothing is written.
-2. **Probe Run** with *Relations per run* at a small number (25 by default). In dry run it probes for real and tells you what it would write, but writes nothing and loads no episode lists.
-3. Turn **Dry run** off and run again on a small batch. Check a few relations through the API. In the UI, the quality should also show next to each source in a movie's details.
-4. Set *Relations per run* to `0` for the big first pass, and follow it with **Run Status**. **Pause** stops it after the relation in progress; **Resume** lifts the pause.
-5. From then on, run it on a schedule (below): each run only handles what is new.
+2. **Probe Run** with Dry run on. It goes through everything due and probes for real, but writes nothing and loads no episode lists: Dispatcharr's log shows, for each relation, what it would write. Click **Pause** once you have seen enough, or put a few ids in *Only these movie relation ids* to try only those.
+3. Turn **Dry run** off and click **Probe Run** again: this is the first pass, which writes everything due, batch after batch. Follow it with **Run Status**; **Pause** stops it after the relation in progress, **Resume** lifts the pause and the next run carries on. Check a few relations through the API; in the UI, the quality also shows next to each source in a movie's details.
+4. From then on, run it on a schedule (below): each run only handles what is new.
 
 ## Settings
 
 | Setting | Default | What it does |
 | --- | --- | --- |
 | Dry run | on | Probe for real but write nothing, and load no episode lists. |
-| Relations per run | 25 | A run handles a random sample of this many due movie relations and series versions (one series version counts as one, all its seasons included). `0` means everything due. |
+| Batch size | 25 | A run goes through everything due, this many movie relations and series versions at a time (one series version counts as one, all its seasons included). Between batches it reads what is due again, so it also takes what became due meanwhile, and it does not stop until nothing is left, you click **Pause**, or the circuit breaker trips. `0` means a single batch. |
 | Only these movie relation ids / series relation ids | empty | Comma-separated. When set, a run handles exactly these and nothing else, and probes them again even if they are already done. Handy to redo one title. |
 | Episodes: what to probe | one per series version | See [Series](#series). |
 | Max concurrent probes | 1 | Each probe opens a real connection to your provider. Stay below its connection limit. |
@@ -205,14 +204,14 @@ Keep **Dry run** on for the first steps.
 | **Coverage Stats** | How many relations have an answer, split into measured and inferred, with the tiers found. |
 | **[SCHEDULE] Apply / Remove / Status** | Manage the periodic run. |
 
-**Scan**, **Coverage Stats**, **Retry Errors** and **Reload Incomplete Series** also run in the background, because they read every relation. The click returns at once; the result of Scan, Coverage Stats and Retry Errors appears in Dispatcharr's notification centre and at the end of **Run Status**. A notification is also sent when a run ends.
+**Scan**, **Coverage Stats**, **Retry Errors** and **Reload Incomplete Series** also run in the background, because they read every relation. The click returns at once; their result appears in Dispatcharr's notification centre. A notification is also sent when a run ends; **Run Status** gives the details of that run, or the progress of the one in flight.
 
 ## Scheduling
 
 Dispatcharr has no scheduling API for plugins, so VOD Probe registers a `django-celery-beat` periodic task, the same way other plugins do.
 
 - Set **Schedule** to a cron expression (`0 4 * * *` is every day at 04:00), then click **[SCHEDULE] Apply**. The time is read in the time zone set in Dispatcharr's System Settings, like Dispatcharr's own schedules; notification titles show the time in the same zone. An empty schedule means no schedule: Apply then removes any existing one.
-- The settings are **copied when you click Apply**, so click it again after changing one. The exceptions are the retry switch, which is read live when the run starts, and the per-run limit and the id lists, which a scheduled run always ignores: it handles everything due.
+- The settings are **copied when you click Apply**, so click it again after changing one. The exceptions are the retry switch, which is read live when the run starts, and the id lists, which a scheduled run ignores: like any run, it handles everything due.
 
 ## Good to know
 
@@ -275,7 +274,7 @@ If a run fails after a Dispatcharr update, look at these first.
 
 ## Status
 
-Version 1.0.0. In daily use since 2026-09-21 on a Dispatcharr 0.31.0 instance that serves a Jellyfin library, with one Xtream Codes provider and a catalogue of about 600 movies, 900 series and 22,000 episodes. That covers a full first pass on movies and series, writes to the catalogue, disabling and re-enabling groups, failed probes and retries, Dispatcharr's own scheduled refreshes, and the plugin's scheduled runs with the retry switch on. Not tested with several providers or with a concurrency above 1.
+Version 1.0.1. In daily use since 2026-09-21 on a Dispatcharr 0.31.0 instance that serves a Jellyfin library, with one Xtream Codes provider and a catalogue of about 600 movies, 900 series and 22,000 episodes. That covers a full first pass on movies and series, writes to the catalogue, disabling and re-enabling groups, failed probes and retries, Dispatcharr's own scheduled refreshes, and the plugin's scheduled runs with the retry switch on. Not tested with several providers or with a concurrency above 1.
 
 ## Development
 

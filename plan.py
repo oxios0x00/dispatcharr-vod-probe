@@ -103,3 +103,17 @@ def short_versions(counts_by_series):
         most = max((n for _, n in versions), default=0)
         short += [rid for rid, n in versions if 0 < n < most]
     return short
+
+
+def next_batch(due, done, size):
+    """The next batch of a run, and how many units are left to do.
+
+    due: the units due now, as (kind, id, forced); done: the (kind, id) pairs
+    this run already handled. A run goes through everything due, size units at
+    a time (0 = all at once), and reads what is due again between batches, so
+    it also picks up what became due meanwhile. What it already handled is
+    never taken again in the same run: a failure, or any unit in a dry run,
+    stays due and would otherwise come back forever."""
+    remaining = [unit for unit in due if (unit[0], unit[1]) not in done]
+    batch = remaining[:size] if size > 0 else remaining
+    return batch, len(remaining)
