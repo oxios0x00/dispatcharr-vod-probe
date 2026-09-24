@@ -1,5 +1,5 @@
 """VOD Probe — writes each VOD relation's real quality into Dispatcharr's
-catalogue. See DESIGN.md for the contract and the roadmap.
+catalogue. See README.md for the data contract.
 
 Probe Run probes for real. With Dry run on (the default) it only reports what
 it would write; with it off it writes quality, resolution and probe into the
@@ -71,7 +71,7 @@ class _RateLimiter:
 
 class Plugin:
     name = "VOD Probe"
-    version = "0.9.1"
+    version = "0.10.0"
     description = (
         "Probes the real quality of each VOD relation with ffprobe and writes it "
         "into the relation's custom_properties, so every tool reading "

@@ -1,5 +1,5 @@
 """The data contract: what vod-probe writes into a relation's custom_properties,
-and when a relation is due for (re)probing. See DESIGN.md.
+and when a relation is due for (re)probing. See README.md.
 
 Pure Python, no Django, so it is unit-tested outside Dispatcharr.
 
@@ -15,7 +15,7 @@ except ImportError:  # imported as a top-level module by the unit tests
     from probe import PROBE_SCHEMA_VERSION, _AD_TITLE_HINTS
 
 PLUGIN_SOURCE = "vod-probe"
-PLUGIN_VERSION = "0.9.1"
+PLUGIN_VERSION = "0.10.0"
 
 STATUS_OK = "ok"
 STATUS_ERROR = "error"

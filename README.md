@@ -269,7 +269,7 @@ If a run fails after a Dispatcharr update, look at these first.
 
 ## Status
 
-Version 0.9.1. Tested on a Dispatcharr 0.31.0 test instance with a single Xtream Codes provider, on both movies and series, including a full first pass, disabling and re-enabling groups, failed probes and retries, and the scheduled trigger firing on its own with the retry switch on. Not tested on a production instance, with several providers, or with a concurrency above 1.
+Version 0.10.0. Tested on a Dispatcharr 0.31.0 test instance with a single Xtream Codes provider, on both movies and series, including a full first pass, disabling and re-enabling groups, failed probes and retries, and the scheduled trigger firing on its own with the retry switch on. Not tested on a production instance, with several providers, or with a concurrency above 1.
 
 ## Development
 
