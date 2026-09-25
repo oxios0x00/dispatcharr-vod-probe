@@ -71,7 +71,7 @@ class _RateLimiter:
 
 class Plugin:
     name = "VOD Probe"
-    version = "1.0.1"
+    version = "1.0.2"
     description = (
         "Probes the real quality of each VOD relation with ffprobe and writes it "
         "into the relation's custom_properties, so every tool reading "
@@ -642,12 +642,16 @@ class Plugin:
                 complete_sample = rows[0][0] if rows and not out["errors"] else None
             else:
                 complete_sample = first_sample if rows and answered == len(groups) else None
+            # Something was actually probed this pass, as opposed to nothing left to try:
+            # tells series_marker to answer "error" (a real answer) rather than "pending"
+            # (still to do) when no episode came back usable.
+            tried = (out["probed"] + out["errors"]) > 0
             self._write(
                 series_model, series_relation_id,
                 # The current time, not the start of the pass: the summary must be newer than
                 # the reload done above, or the series would look reloaded after it.
                 lambda current: series_marker(
-                    current, last_modified, len(rows), seasons, mode, complete_sample, datetime.now(timezone.utc)
+                    current, last_modified, len(rows), seasons, mode, complete_sample, datetime.now(timezone.utc), tried
                 ),
             )
         return out
@@ -919,7 +923,9 @@ class Plugin:
             if flagged:
                 counts[label] += flagged
         series_model = self._series_model()
-        series_to_visit.update(series_model.objects.filter(custom_properties__probe__status="pending").values_list("id", flat=True))
+        series_to_visit.update(
+            series_model.objects.filter(custom_properties__probe__status__in=["pending", "error"]).values_list("id", flat=True)
+        )
         flagged = self._write_many(series_model, sorted(series_to_visit), flag_series_retry)
         if flagged:
             counts["series versions"] += flagged

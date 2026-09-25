@@ -156,6 +156,23 @@ def test_series_marker_ok_and_pending():
     assert series_marker({}, 5, 0, 0, "first_of_series", None, NOW)["probe"]["status"] == "pending"
 
 
+def test_series_marker_error_when_every_episode_it_tried_failed():
+    """Distinct from "pending": every episode this pass could try was probed
+    and none came back usable — a real answer, not "not sampled yet". A series
+    it never got to try (nothing due, or the reload itself failed) stays
+    "pending" even after many attempts."""
+    from contract import series_marker
+
+    error = series_marker({}, 5, 3, 1, "first_of_series", None, NOW, tried=True)["probe"]
+    assert error["status"] == "error" and error["attempts"] == 1
+    untried = series_marker({}, 5, 3, 1, "first_of_series", None, NOW, tried=False)["probe"]
+    assert untried["status"] == "pending"
+    # A later pass that succeeds still clears it, whichever it was stuck at.
+    for previous in (error, untried):
+        recovered = series_marker({"probe": previous}, 5, 3, 1, "first_of_series", 7, NOW, tried=True)["probe"]
+        assert recovered["status"] == "ok"
+
+
 def test_series_work():
     from contract import series_marker, series_work
 
@@ -170,9 +187,12 @@ def test_series_work():
     assert series_work(done, 20, "all") == {"reason": "mode", "reload": False}
     pending = series_marker(fresh, 5, 20, 2, "first_of_series", None, NOW)
     assert series_work(pending, 20, "first_of_series") is None  # left alone until Retry Errors
+    error = series_marker(fresh, 5, 20, 2, "first_of_series", None, NOW, tried=True)
+    assert series_work(error, 20, "first_of_series") is None  # frozen exactly like "pending"
     from contract import flag_retry
 
     assert series_work(flag_retry(pending), 20, "first_of_series") == {"reason": "retry", "reload": False}
+    assert series_work(flag_retry(error), 20, "first_of_series") == {"reason": "retry", "reload": False}
 
 
 def test_a_reload_by_dispatcharr_after_our_summary_forces_reprocessing():

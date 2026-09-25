@@ -89,22 +89,22 @@ Each series relation (one version of a series) also carries its own `custom_prop
 | Field | Meaning |
 | --- | --- |
 | `schema_version` | Format version, as for a relation. |
-| `status` | `ok`: the episodes are loaded and **every episode has an answer**, measured or inferred. `pending`: not yet (no episode found, no sample could be probed, or an episode still failing). A series with no summary has not been handled yet. |
+| `status` | `ok`: the episodes are loaded and **every episode has an answer**, measured or inferred. `error`: it was fully sampled and could not get a usable result — a real answer, kept apart from `pending`. `pending`: genuinely not sampled yet (no episode found, or the episode list itself could not be loaded). A series with no summary has not been handled yet. |
 | `probed_at` | When the summary was written (UTC). |
 | `last_modified` | The provider's own "last modified" value for the series at that time. |
 | `episodes`, `seasons` | How many the plugin saw. |
 | `mode` | The **Episodes** setting used: `first_of_series`, `first_of_season` or `all`. |
 | `sampled_from` | The episode relation that was probed and copied from. In *Every episode* mode it is simply the first episode. Present when `status` is `ok`. |
-| `attempts` | How many times a `pending` series was handled. |
+| `attempts` | How many times the series ended up without a usable result, `pending` or `error`. |
 | `retry`, `reload` | Internal flags set by Retry Errors and Reload Incomplete Series. Ignore them. |
 
 ### What you can rely on
 
 If you build on this data, these are the rules:
 
-- **A relation has a usable result** when `probe.status` is `ok` or `inferred` and `probe.tier` is set. `error` and `unreachable` mean the probe was tried and failed. No `probe` block means the relation has not been handled yet. A series is fully answered when its summary's `status` is `ok`.
+- **A relation has a usable result** when `probe.status` is `ok` or `inferred` and `probe.tier` is set. `error` and `unreachable` mean the probe was tried and failed. No `probe` block means the relation has not been handled yet. A series is fully answered when its summary's `status` is `ok`. `error` is also a real answer — sampled, nothing usable — not "still working on it"; only `pending` means that.
 - **Documented fields keep their name and meaning** as long as `schema_version` does not change. It is currently **5**.
-- **Fields may be added without a version change**, so ignore the ones you do not know.
+- **Fields may be added without a version change**, so ignore the ones you do not know. The same goes for a new value of an existing field that only narrows a state already treated as "not answered" — `error` for a series summary's `status`, added in 1.0.2, is one: a consumer already treating anything but `ok` as "not ready" needs no change to stay correct, and can start treating `error` on its own as a definitive answer whenever it does.
 - **A rename, a removal or a change of meaning raises `schema_version`.** Treat a block whose version you do not know as not measured.
 - **Not part of the contract:** the text of `error`, `attempts`, `retry`, `reload` and `source`. They are informational and may change.
 - **`quality`** (next to `probe`) uses Dispatcharr's own vocabulary, so `quality_info` keeps working.
@@ -221,6 +221,8 @@ A failed probe is never retried on its own, so a dead link is not probed again e
 
 A relation whose probe fails keeps its last known `quality` and `resolution`; only `probe.status`, the short error and an attempt counter change.
 
+The same is true of a series version once every episode it could try has failed: its summary settles on `status: "error"` and is left alone, exactly like a failed movie — **Retry Errors** flags it (and its failed episodes) for the next run too. If the provider is still down, it settles back on `error`, not `pending`.
+
 ### Incomplete episode lists
 
 Dispatcharr marks a series' episodes as loaded as soon as the provider answers without an error, even when the answer was empty or partial, and never checks again. An episode Dispatcharr does not hold has no information at all, so two cases are handled:
@@ -274,7 +276,7 @@ If a run fails after a Dispatcharr update, look at these first.
 
 ## Status
 
-Version 1.0.1. In daily use since 2026-09-21 on a Dispatcharr 0.31.0 instance that serves a Jellyfin library, with one Xtream Codes provider and a catalogue of about 600 movies, 900 series and 22,000 episodes. That covers a full first pass on movies and series, writes to the catalogue, disabling and re-enabling groups, failed probes and retries, Dispatcharr's own scheduled refreshes, and the plugin's scheduled runs with the retry switch on. Not tested with several providers or with a concurrency above 1.
+Version 1.0.2. In daily use since 2026-09-21 on a Dispatcharr 0.31.0 instance that serves a Jellyfin library, with one Xtream Codes provider and a catalogue of about 600 movies, 900 series and 22,000 episodes. That covers a full first pass on movies and series, writes to the catalogue, disabling and re-enabling groups, failed probes and retries, Dispatcharr's own scheduled refreshes, and the plugin's scheduled runs with the retry switch on. Not tested with several providers or with a concurrency above 1.
 
 ## Development
 

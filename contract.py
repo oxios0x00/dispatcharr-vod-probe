@@ -15,7 +15,7 @@ except ImportError:  # imported as a top-level module by the unit tests
     from probe import PROBE_SCHEMA_VERSION, _AD_TITLE_HINTS
 
 PLUGIN_SOURCE = "vod-probe"
-PLUGIN_VERSION = "1.0.1"
+PLUGIN_VERSION = "1.0.2"
 
 STATUS_OK = "ok"
 STATUS_ERROR = "error"
@@ -268,19 +268,25 @@ def merge_inferred(existing, source_properties, source_relation_id, now):
     return merged
 
 
-def series_marker(existing, last_modified, episodes, seasons, mode, sampled_from, now):
+def series_marker(existing, last_modified, episodes, seasons, mode, sampled_from, now, tried=False):
     """New custom_properties for a series relation once its episodes have been
     handled. The marker records what was seen (the provider's last_modified,
     the episode and season counts), so the daily scan only has to read series
-    relations, and only opens the series whose last_modified moved. It is
-    "pending" when some episodes still lack an answer or none were found: it
-    stays so until Retry Errors flags it."""
+    relations, and only opens the series whose last_modified moved.
+
+    `tried` says whether this pass actually probed something (as opposed to
+    finding nothing left to try). Without a usable result: "error" when it
+    tried and every probe failed — a real answer, not "still working on it" —
+    kept apart from "pending", which means genuinely not sampled yet. Both
+    stay so until Retry Errors flags it: series_work only revisits a series
+    whose status is not "ok"."""
     merged = dict(existing or {})
     previous = merged.get("probe") if isinstance(merged.get("probe"), dict) else {}
     complete = episodes > 0 and sampled_from is not None
+    status = STATUS_OK if complete else (STATUS_ERROR if tried else "pending")
     marker = {
         "schema_version": PROBE_SCHEMA_VERSION,
-        "status": STATUS_OK if complete else "pending",
+        "status": status,
         "probed_at": _iso(now),
         "last_modified": None if last_modified is None else str(last_modified),
         "episodes": episodes,
