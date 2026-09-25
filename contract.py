@@ -15,7 +15,7 @@ except ImportError:  # imported as a top-level module by the unit tests
     from probe import PROBE_SCHEMA_VERSION, _AD_TITLE_HINTS
 
 PLUGIN_SOURCE = "vod-probe"
-PLUGIN_VERSION = "1.0.3"
+PLUGIN_VERSION = "1.0.4"
 
 STATUS_OK = "ok"
 STATUS_ERROR = "error"
@@ -361,7 +361,12 @@ def series_work(custom_properties, episode_count, mode, last_episode_refresh=Non
     whose episodes Dispatcharr reloaded after our summary (last_episode_refresh
     is newer) is reprocessed too: a reload, which the UI triggers when a series
     is opened after 24 hours, replaces the whole custom_properties of every
-    episode relation and so erases what we wrote."""
+    episode relation and so erases what we wrote.
+
+    A "pending" summary is also revisited on its own, unlike "error" and
+    "partial": it means a season's sample is genuinely still short of
+    episodes to try (the MAX_SAMPLE_TRIES cap), not a settled answer, so each
+    pass keeps sampling more of what is left without needing Retry Errors."""
     properties = custom_properties or {}
     if not properties.get("episodes_fetched"):
         return {"reason": "load", "reload": True}
@@ -383,6 +388,12 @@ def series_work(custom_properties, episode_count, mode, last_episode_refresh=Non
     current = (properties.get("basic_data") or {}).get("last_modified")
     if str(current) != str(marker.get("last_modified")) and not (current is None and marker.get("last_modified") is None):
         return {"reason": "changed", "reload": True}
+    if marker.get("status") == "pending":
+        # Genuinely unfinished (the MAX_SAMPLE_TRIES cap left episodes of a season
+        # untried), not a settled answer: keeps sampling on its own, no Retry Errors
+        # needed — unlike "error"/"partial", which are done and need a human to ask
+        # again. Each pass tries more of what is left, so this converges on its own.
+        return {"reason": "sampling", "reload": False}
     if marker.get("status") != STATUS_OK:
         return None
     if _MODE_RANK.get(mode, 0) > _MODE_RANK.get(marker.get("mode"), 0):

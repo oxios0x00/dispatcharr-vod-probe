@@ -77,6 +77,32 @@ def test_a_season_with_more_untried_episodes_than_the_sample_cap_stays_pending()
             assert all(ep.custom_properties["probe"]["status"] == "unreachable" for ep in tried)
 
 
+def test_a_pending_series_keeps_progressing_across_runs_with_no_retry_errors():
+    """The exact production case (2026-09-25): a season with more due episodes
+    than MAX_SAMPLE_TRIES only got 3 tried, no matter how many Probe Runs
+    followed, because series_work froze the series at "pending" the same way
+    it freezes "error"/"partial" — Retry Errors kept re-arming the same 3
+    already-failed episodes ahead of the untried ones, in episode order, so
+    the untried tail was never reached. A "pending" series must keep sampling
+    on its own, with no Retry Errors at all, converging to a final status."""
+    with fake_django() as models:
+        series = Row(id=10, custom_properties={"episodes_fetched": True}, last_episode_refresh=None)
+        episodes = [episode(100 + n, 10, n) for n in range(1, 8)]  # 7 episodes, cap is 3
+        models.M3USeriesRelation.objects.rows.append(series)
+        models.M3UEpisodeRelation.objects.rows.extend(episodes)
+        from vod_probe_pkg.contract import series_work
+
+        with with_plugin() as plugin:
+            for _ in range(3):  # ceil(7 / MAX_SAMPLE_TRIES) passes, no Retry Errors between them
+                # The real gate a scheduled run goes through — not forced by the test.
+                if series_work(series.custom_properties, len(episodes), "first_of_series") is None:
+                    break
+                run(plugin, [("series", 10, False)], {**BASE_SETTINGS, "dry_run": False}, ok=False)
+
+            assert series.custom_properties["probe"]["status"] == "error"  # settled: none of the 7 came back usable
+            assert all(ep.custom_properties.get("probe", {}).get("status") == "unreachable" for ep in episodes)
+
+
 def test_a_series_with_one_season_confirmed_dead_and_the_rest_ok_is_partial():
     """The real case: a series in "one per season" mode where every other
     season answers and exactly one is confirmed dead must say so — not vanish

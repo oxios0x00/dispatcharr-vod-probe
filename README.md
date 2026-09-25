@@ -89,7 +89,7 @@ Each series relation (one version of a series) also carries its own `custom_prop
 | Field | Meaning |
 | --- | --- |
 | `schema_version` | Format version, as for a relation. |
-| `status` | `ok`: **every episode has an answer**, measured or inferred. `partial`: some do, and the rest are confirmed dead — nothing more will happen without **Retry Errors**. `error`: none do — every one it could try failed. Both are real answers, kept apart from `pending`: genuinely not sampled yet, or (in `first_of_season`) a season the sample cap has not finished trying. A series with no summary has not been handled yet. |
+| `status` | `ok`: **every episode has an answer**, measured or inferred. `partial`: some do, and the rest are confirmed dead — settled, nothing more will happen without **Retry Errors**. `error`: none do — every one it could try failed, settled too. `pending`: genuinely not sampled yet, or (in `first_of_season`) a season the sample cap has not finished trying — this one keeps going on its own, no Retry Errors needed. A series with no summary has not been handled yet. |
 | `probed_at` | When the summary was written (UTC). |
 | `last_modified` | The provider's own "last modified" value for the series at that time. |
 | `episodes`, `seasons` | How many the plugin saw. |
@@ -221,7 +221,7 @@ A failed probe is never retried on its own, so a dead link is not probed again e
 
 A relation whose probe fails keeps its last known `quality` and `resolution`; only `probe.status`, the short error and an attempt counter change.
 
-The same is true of a series version once it has fully sampled and is left with nothing more to try: its summary settles on `status: "error"` (nothing worked) or `"partial"` (some seasons did, one or more are confirmed dead) and is left alone, exactly like a failed movie — **Retry Errors** flags it (and its failed episodes) for the next run too. If the provider is still down, it settles back where it was, not `pending`.
+The same is true of a series version once it has fully sampled and is left with nothing more to try: its summary settles on `status: "error"` (nothing worked) or `"partial"` (some seasons did, one or more are confirmed dead) and is left alone, exactly like a failed movie — **Retry Errors** flags it (and its failed episodes) for the next run too. If the provider is still down, it settles back where it was, not `pending`. A season with more episodes than the sample cap tries a few more each pass on its own, without Retry Errors — a `pending` summary means real work is still left, not a settled answer.
 
 ### Incomplete episode lists
 
@@ -276,7 +276,7 @@ If a run fails after a Dispatcharr update, look at these first.
 
 ## Status
 
-Version 1.0.3. In daily use since 2026-09-21 on a Dispatcharr 0.31.0 instance that serves a Jellyfin library, with one Xtream Codes provider and a catalogue of about 600 movies, 900 series and 22,000 episodes. That covers a full first pass on movies and series, writes to the catalogue, disabling and re-enabling groups, failed probes and retries, Dispatcharr's own scheduled refreshes, and the plugin's scheduled runs with the retry switch on. Not tested with several providers or with a concurrency above 1.
+Version 1.0.4. In daily use since 2026-09-21 on a Dispatcharr 0.31.0 instance that serves a Jellyfin library, with one Xtream Codes provider and a catalogue of about 600 movies, 900 series and 22,000 episodes. That covers a full first pass on movies and series, writes to the catalogue, disabling and re-enabling groups, failed probes and retries, Dispatcharr's own scheduled refreshes, and the plugin's scheduled runs with the retry switch on. Not tested with several providers or with a concurrency above 1.
 
 ## Development
 

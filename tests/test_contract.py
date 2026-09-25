@@ -191,11 +191,12 @@ def test_series_work():
     assert series_work(moved, 20, "first_of_series") == {"reason": "changed", "reload": True}
     assert series_work(done, 20, "all") == {"reason": "mode", "reload": False}
     pending = series_marker(fresh, 5, 20, 2, "first_of_series", None, NOW, "pending")
-    assert series_work(pending, 20, "first_of_series") is None  # left alone until Retry Errors
+    # Unfinished, not settled: kept sampling on its own, unlike "error"/"partial".
+    assert series_work(pending, 20, "first_of_series") == {"reason": "sampling", "reload": False}
     error = series_marker(fresh, 5, 20, 2, "first_of_series", None, NOW, "error")
-    assert series_work(error, 20, "first_of_series") is None  # frozen exactly like "pending"
+    assert series_work(error, 20, "first_of_series") is None  # settled: needs Retry Errors
     partial = series_marker(fresh, 5, 20, 2, "first_of_series", 7, NOW, "partial")
-    assert series_work(partial, 20, "first_of_series") is None  # frozen too: also not "ok"
+    assert series_work(partial, 20, "first_of_series") is None  # settled too: also not "ok"
     from contract import flag_retry
 
     assert series_work(flag_retry(pending), 20, "first_of_series") == {"reason": "retry", "reload": False}
