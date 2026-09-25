@@ -51,18 +51,24 @@ def plan_series(entries, mode):
     """entries: [(relation_id, custom_properties)] for every episode of one
     series relation, in season and episode order.
 
-    Returns {"candidates": [...], "representative": id or None, "infer": [...]}:
+    Returns {"candidates": [...], "representative": id or None, "infer": [...],
+    "more_due": bool}:
     - mode "all": candidates are every episode due for a probe; nothing is copied.
     - the other modes: if a measured episode exists it is the
       representative and the others still lacking a block are to be
       inferred. Otherwise the due episodes, in order, are the candidates to
-      try; the caller infers the rest once one of them succeeds."""
+      try; the caller infers the rest once one of them succeeds.
+    "more_due" says whether due episodes were left out of "candidates" by the
+    MAX_SAMPLE_TRIES cap: the group is not yet exhausted even if none of the
+    tried candidates come back usable, so it should stay "pending", not a
+    final answer."""
     entries = _detach_foreign_copies(entries)
     if mode == MODE_ALL:
         return {
             "candidates": [rid for rid, cp in entries if needs_probe(cp, inferred_due=True)],
             "representative": None,
             "infer": [],
+            "more_due": False,
         }
     representative = next((rid for rid, cp in entries if is_measured(cp)), None)
     if representative is not None:
@@ -70,11 +76,14 @@ def plan_series(entries, mode):
             "candidates": [],
             "representative": representative,
             "infer": [rid for rid, cp in entries if rid != representative and needs_inference(cp)],
+            "more_due": False,
         }
+    due = [rid for rid, cp in entries if needs_probe(cp)]
     return {
-        "candidates": [rid for rid, cp in entries if needs_probe(cp)][:MAX_SAMPLE_TRIES],
+        "candidates": due[:MAX_SAMPLE_TRIES],
         "representative": None,
         "infer": [],
+        "more_due": len(due) > MAX_SAMPLE_TRIES,
     }
 
 

@@ -100,16 +100,16 @@ def test_a_failure_is_readable_and_keeps_the_last_known_quality():
 
 def test_a_series_is_answered_only_when_its_summary_says_ok():
     fetched = {"episodes_fetched": True, "basic_data": {"last_modified": "5"}}
-    done = series_marker(fetched, 5, 8, 1, "first_of_series", 99, NOW)
+    done = series_marker(fetched, 5, 8, 1, "first_of_series", 99, NOW, "ok")
     assert series_answered(done) and DOCUMENTED_SERIES_FIELDS <= set(done["probe"])
     assert done["probe"]["last_modified"] == "5" and done["probe"]["episodes"] == 8 and done["probe"]["mode"] == "first_of_series"
-    pending = series_marker(fetched, 5, 8, 1, "first_of_series", None, NOW)
+    pending = series_marker(fetched, 5, 8, 1, "first_of_series", None, NOW, "pending")
     assert not series_answered(pending) and pending["probe"]["status"] == "pending"
     assert not series_answered(fetched)
 
 
 def test_internal_flags_do_not_change_what_a_consumer_reads():
-    done = series_marker({"episodes_fetched": True}, 5, 8, 1, "first_of_series", 99, NOW)
+    done = series_marker({"episodes_fetched": True}, 5, 8, 1, "first_of_series", 99, NOW, "ok")
     assert series_answered(flag_reload(done, NOW)) and series_answered(done)
     failed_props = merge_failure({}, "boom", NOW)
     assert failed(flag_retry(failed_props))

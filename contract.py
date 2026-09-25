@@ -15,12 +15,13 @@ except ImportError:  # imported as a top-level module by the unit tests
     from probe import PROBE_SCHEMA_VERSION, _AD_TITLE_HINTS
 
 PLUGIN_SOURCE = "vod-probe"
-PLUGIN_VERSION = "1.0.2"
+PLUGIN_VERSION = "1.0.3"
 
 STATUS_OK = "ok"
 STATUS_ERROR = "error"
 STATUS_UNREACHABLE = "unreachable"
 STATUS_INFERRED = "inferred"
+STATUS_PARTIAL = "partial"
 RELOAD_TOLERANCE = timedelta(seconds=2)
 # How many times a series loaded with no episode is asked for again before it is left alone.
 MAX_EMPTY_RELOADS = 3
@@ -268,22 +269,42 @@ def merge_inferred(existing, source_properties, source_relation_id, now):
     return merged
 
 
-def series_marker(existing, last_modified, episodes, seasons, mode, sampled_from, now, tried=False):
+def series_status(episodes, answered, total, exhausted):
+    """The series summary's status once a pass over it is done.
+
+    `answered`/`total`: how many independent samples came back usable, out of
+    how many exist — a season in "one per season" mode, one episode in "every
+    episode" mode, or the one series-wide sample otherwise. `exhausted`: True
+    when nothing is left untried among the ones that did not answer (the
+    MAX_SAMPLE_TRIES cap can leave some of a season's episodes untried, in
+    which case it is not).
+
+    "ok" needs every sample to answer. Short of that: "pending" while
+    something up there is still untried, so a next pass (or Retry Errors) can
+    still make progress; once nothing is left to try, "error" if none of them
+    answered, "partial" if at least one did — both real answers, not "still
+    working on it", the same way a failed relation is never retried on its
+    own. A series a pass never got to (no episode found yet, or its episode
+    list could not be loaded) is "pending" too, via `episodes <= 0`."""
+    if episodes <= 0:
+        return "pending"
+    if total > 0 and answered == total:
+        return STATUS_OK
+    if not exhausted:
+        return "pending"
+    return STATUS_ERROR if answered == 0 else STATUS_PARTIAL
+
+
+def series_marker(existing, last_modified, episodes, seasons, mode, sampled_from, now, status):
     """New custom_properties for a series relation once its episodes have been
     handled. The marker records what was seen (the provider's last_modified,
     the episode and season counts), so the daily scan only has to read series
-    relations, and only opens the series whose last_modified moved.
-
-    `tried` says whether this pass actually probed something (as opposed to
-    finding nothing left to try). Without a usable result: "error" when it
-    tried and every probe failed — a real answer, not "still working on it" —
-    kept apart from "pending", which means genuinely not sampled yet. Both
-    stay so until Retry Errors flags it: series_work only revisits a series
-    whose status is not "ok"."""
+    relations, and only opens the series whose last_modified moved. `status`
+    comes from series_status(); anything but "ok" stays so until Retry Errors
+    flags it, since series_work only revisits a series whose status is not
+    "ok"."""
     merged = dict(existing or {})
     previous = merged.get("probe") if isinstance(merged.get("probe"), dict) else {}
-    complete = episodes > 0 and sampled_from is not None
-    status = STATUS_OK if complete else (STATUS_ERROR if tried else "pending")
     marker = {
         "schema_version": PROBE_SCHEMA_VERSION,
         "status": status,
@@ -296,7 +317,7 @@ def series_marker(existing, last_modified, episodes, seasons, mode, sampled_from
     }
     if sampled_from is not None:
         marker["sampled_from"] = sampled_from
-    if not complete:
+    if status != STATUS_OK:
         marker["attempts"] = int(previous.get("attempts") or 0) + 1
     merged["probe"] = marker
     return merged

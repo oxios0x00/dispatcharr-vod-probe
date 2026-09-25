@@ -143,34 +143,39 @@ def test_needs_inference():
     assert needs_inference({"probe": {**ok["probe"], "schema_version": 1}})
 
 
-def test_series_marker_ok_and_pending():
+def test_series_status():
+    """ok needs every sample to answer. Short of that: pending while
+    something is still untried (the MAX_SAMPLE_TRIES cap can leave episodes
+    of a season untried — not exhausted); once nothing is left to try, error
+    if nothing ever answered, partial if at least one sample did — a series
+    with 6 seasons where 5 answer and 1 is confirmed dead is "partial", not
+    stuck looking like it is still being worked on."""
+    from contract import series_status
+
+    assert series_status(episodes=0, answered=0, total=0, exhausted=True) == "pending"
+    assert series_status(episodes=20, answered=1, total=1, exhausted=True) == "ok"
+    assert series_status(episodes=20, answered=0, total=1, exhausted=False) == "pending"
+    assert series_status(episodes=20, answered=0, total=1, exhausted=True) == "error"
+    assert series_status(episodes=85, answered=5, total=6, exhausted=True) == "partial"
+    assert series_status(episodes=85, answered=5, total=6, exhausted=False) == "pending"  # a 6th season still to try
+
+
+def test_series_marker_records_the_given_status():
     from contract import series_marker
 
-    ok = series_marker({"basic_data": {"last_modified": "5"}, "episodes_fetched": True}, 5, 20, 2, "first_of_series", 99, NOW)
+    ok = series_marker({"basic_data": {"last_modified": "5"}, "episodes_fetched": True}, 5, 20, 2, "first_of_series", 99, NOW, "ok")
     assert ok["basic_data"] == {"last_modified": "5"} and ok["episodes_fetched"] is True
     marker = ok["probe"]
     assert marker["status"] == "ok" and marker["episodes"] == 20 and marker["seasons"] == 2
     assert marker["last_modified"] == "5" and marker["sampled_from"] == 99 and "attempts" not in marker
-    pending = series_marker(ok, 5, 20, 2, "first_of_series", None, NOW)["probe"]
+    pending = series_marker(ok, 5, 20, 2, "first_of_series", None, NOW, "pending")["probe"]
     assert pending["status"] == "pending" and pending["attempts"] == 1
-    assert series_marker({}, 5, 0, 0, "first_of_series", None, NOW)["probe"]["status"] == "pending"
-
-
-def test_series_marker_error_when_every_episode_it_tried_failed():
-    """Distinct from "pending": every episode this pass could try was probed
-    and none came back usable — a real answer, not "not sampled yet". A series
-    it never got to try (nothing due, or the reload itself failed) stays
-    "pending" even after many attempts."""
-    from contract import series_marker
-
-    error = series_marker({}, 5, 3, 1, "first_of_series", None, NOW, tried=True)["probe"]
+    error = series_marker(ok, 5, 20, 2, "first_of_series", None, NOW, "error")["probe"]
     assert error["status"] == "error" and error["attempts"] == 1
-    untried = series_marker({}, 5, 3, 1, "first_of_series", None, NOW, tried=False)["probe"]
-    assert untried["status"] == "pending"
     # A later pass that succeeds still clears it, whichever it was stuck at.
-    for previous in (error, untried):
-        recovered = series_marker({"probe": previous}, 5, 3, 1, "first_of_series", 7, NOW, tried=True)["probe"]
-        assert recovered["status"] == "ok"
+    for previous in (pending, error):
+        recovered = series_marker({"probe": previous}, 5, 20, 2, "first_of_series", 7, NOW, "ok")["probe"]
+        assert recovered["status"] == "ok" and "attempts" not in recovered
 
 
 def test_series_work():
@@ -179,16 +184,18 @@ def test_series_work():
     fresh = {"episodes_fetched": True, "basic_data": {"last_modified": "5"}}
     assert series_work({"episodes_fetched": False}, 0, "first_of_series") == {"reason": "load", "reload": True}
     assert series_work(fresh, 20, "first_of_series") == {"reason": "unmarked", "reload": False}
-    done = series_marker(fresh, 5, 20, 2, "first_of_series", 99, NOW)
+    done = series_marker(fresh, 5, 20, 2, "first_of_series", 99, NOW, "ok")
     assert series_work(done, 20, "first_of_series") is None
     assert series_work(done, 21, "first_of_series") == {"reason": "count", "reload": False}
     moved = {**done, "basic_data": {"last_modified": "6"}}
     assert series_work(moved, 20, "first_of_series") == {"reason": "changed", "reload": True}
     assert series_work(done, 20, "all") == {"reason": "mode", "reload": False}
-    pending = series_marker(fresh, 5, 20, 2, "first_of_series", None, NOW)
+    pending = series_marker(fresh, 5, 20, 2, "first_of_series", None, NOW, "pending")
     assert series_work(pending, 20, "first_of_series") is None  # left alone until Retry Errors
-    error = series_marker(fresh, 5, 20, 2, "first_of_series", None, NOW, tried=True)
+    error = series_marker(fresh, 5, 20, 2, "first_of_series", None, NOW, "error")
     assert series_work(error, 20, "first_of_series") is None  # frozen exactly like "pending"
+    partial = series_marker(fresh, 5, 20, 2, "first_of_series", 7, NOW, "partial")
+    assert series_work(partial, 20, "first_of_series") is None  # frozen too: also not "ok"
     from contract import flag_retry
 
     assert series_work(flag_retry(pending), 20, "first_of_series") == {"reason": "retry", "reload": False}
@@ -199,7 +206,7 @@ def test_a_reload_by_dispatcharr_after_our_summary_forces_reprocessing():
     from contract import series_marker, series_work
 
     fresh = {"episodes_fetched": True, "basic_data": {"last_modified": "5"}}
-    done = series_marker(fresh, 5, 20, 2, "first_of_series", 99, NOW)
+    done = series_marker(fresh, 5, 20, 2, "first_of_series", 99, NOW, "ok")
     assert series_work(done, 20, "first_of_series", last_episode_refresh=NOW - timedelta(hours=1)) is None
     # our own reload, a fraction of a second before the summary's truncated time
     assert series_work(done, 20, "first_of_series", last_episode_refresh=NOW + timedelta(seconds=1)) is None
@@ -212,11 +219,11 @@ def test_a_more_thorough_mode_redoes_a_series_a_lighter_one_does_not():
     from contract import series_marker, series_work
 
     fresh = {"episodes_fetched": True, "basic_data": {"last_modified": "5"}}
-    done = series_marker(fresh, 5, 20, 2, "first_of_season", 99, NOW)
+    done = series_marker(fresh, 5, 20, 2, "first_of_season", 99, NOW, "ok")
     assert series_work(done, 20, "first_of_series") is None
     assert series_work(done, 20, "first_of_season") is None
     assert series_work(done, 20, "all") == {"reason": "mode", "reload": False}
-    light = series_marker(fresh, 5, 20, 2, "first_of_series", 99, NOW)
+    light = series_marker(fresh, 5, 20, 2, "first_of_series", 99, NOW, "ok")
     assert series_work(light, 20, "first_of_season") == {"reason": "mode", "reload": False}
 
 
@@ -228,7 +235,7 @@ def test_a_series_loaded_with_no_episode_is_asked_for_again_a_few_times():
     marker = fetched
     for attempt in range(MAX_EMPTY_RELOADS):
         assert series_work(marker, 0, "first_of_series") == {"reason": "empty", "reload": True}
-        marker = series_marker(marker, 5, 0, 0, "first_of_series", None, NOW)
+        marker = series_marker(marker, 5, 0, 0, "first_of_series", None, NOW, "pending")
         assert marker["probe"]["attempts"] == attempt + 1
     assert series_work(marker, 0, "first_of_series") is None  # left alone
 
@@ -237,9 +244,11 @@ def test_retry_errors_reloads_a_series_with_no_episode_but_not_one_that_has_some
     from contract import flag_retry, series_marker, series_work
 
     fetched = {"episodes_fetched": True, "basic_data": {"last_modified": "5"}}
-    empty = flag_retry(series_marker(series_marker(series_marker(fetched, 5, 0, 0, "first_of_series", None, NOW), 5, 0, 0, "first_of_series", None, NOW), 5, 0, 0, "first_of_series", None, NOW))
+    once = series_marker(fetched, 5, 0, 0, "first_of_series", None, NOW, "pending")
+    twice = series_marker(once, 5, 0, 0, "first_of_series", None, NOW, "pending")
+    empty = flag_retry(series_marker(twice, 5, 0, 0, "first_of_series", None, NOW, "pending"))
     assert series_work(empty, 0, "first_of_series") == {"reason": "retry", "reload": True}
-    pending = flag_retry(series_marker(fetched, 5, 20, 2, "first_of_series", None, NOW))
+    pending = flag_retry(series_marker(fetched, 5, 20, 2, "first_of_series", None, NOW, "pending"))
     assert series_work(pending, 20, "first_of_series") == {"reason": "retry", "reload": False}
 
 
@@ -247,36 +256,39 @@ def test_flag_reload_makes_the_next_run_ask_the_provider_again():
     from contract import flag_reload, series_marker, series_work
 
     fetched = {"episodes_fetched": True, "basic_data": {"last_modified": "5"}}
-    done = series_marker(fetched, 5, 8, 1, "first_of_series", 99, NOW)
+    done = series_marker(fetched, 5, 8, 1, "first_of_series", 99, NOW, "ok")
     assert series_work(done, 8, "first_of_series") is None
     flagged = flag_reload(done, NOW)
     assert flagged["probe"]["episodes"] == 8 and flagged["probe"]["reload"] is True
     assert series_work(flagged, 8, "first_of_series") == {"reason": "incomplete", "reload": True}
     assert series_work(flag_reload(fetched, NOW), 8, "first_of_series") == {"reason": "incomplete", "reload": True}
-    assert "reload" not in series_marker(flagged, 5, 20, 1, "first_of_series", 99, NOW)["probe"]  # a new summary clears it
+    assert "reload" not in series_marker(flagged, 5, 20, 1, "first_of_series", 99, NOW, "ok")["probe"]  # a new summary clears it
 
 
-def test_an_all_mode_series_with_failed_episodes_is_pending_not_ok():
+def test_an_all_mode_series_with_a_dead_episode_among_working_ones_is_partial():
     from contract import series_marker, series_work
 
     fetched = {"episodes_fetched": True, "basic_data": {"last_modified": "5"}}
-    failed = series_marker(fetched, 5, 40, 3, "all", None, NOW)["probe"]   # _run_series passes no sample when an episode failed
-    assert failed["status"] == "pending" and failed["attempts"] == 1
-    done = series_marker(fetched, 5, 40, 3, "all", 7, NOW)["probe"]
+    dead = series_marker(fetched, 5, 40, 3, "all", None, NOW, "error")["probe"]   # none of the 40 came back usable
+    assert dead["status"] == "error" and dead["attempts"] == 1
+    mixed = series_marker(fetched, 5, 40, 3, "all", 7, NOW, "partial")["probe"]  # 39 of 40, one confirmed dead
+    assert mixed["status"] == "partial" and mixed["attempts"] == 1 and mixed["sampled_from"] == 7
+    done = series_marker(fetched, 5, 40, 3, "all", 7, NOW, "ok")["probe"]
     assert done["status"] == "ok" and "attempts" not in done
-    assert series_work({**fetched, "probe": failed}, 40, "all") is None  # left alone until Retry Errors
+    assert series_work({**fetched, "probe": dead}, 40, "all") is None  # left alone until Retry Errors
+    assert series_work({**fetched, "probe": mixed}, 40, "all") is None
 
 
 def test_a_failed_episode_makes_its_series_visited_again():
     from contract import flag_series_retry, series_marker, series_work
 
     fetched = {"episodes_fetched": True, "basic_data": {"last_modified": "5"}}
-    done = series_marker(fetched, 5, 40, 3, "all", 7, NOW)
+    done = series_marker(fetched, 5, 40, 3, "all", 7, NOW, "ok")
     assert series_work(done, 40, "all") is None
     flagged = flag_series_retry(done)
     assert flagged["probe"]["retry"] is True and "retry" not in done["probe"]
     assert series_work(flagged, 40, "all") == {"reason": "retry", "reload": False}
-    assert "retry" not in series_marker(flagged, 5, 40, 3, "all", 7, NOW)["probe"]  # visiting the series clears it
+    assert "retry" not in series_marker(flagged, 5, 40, 3, "all", 7, NOW, "ok")["probe"]  # visiting the series clears it
     assert flag_series_retry(fetched) == fetched  # no summary: it is processed anyway
 
 

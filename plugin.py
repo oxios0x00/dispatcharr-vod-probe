@@ -71,7 +71,7 @@ class _RateLimiter:
 
 class Plugin:
     name = "VOD Probe"
-    version = "1.0.2"
+    version = "1.0.3"
     description = (
         "Probes the real quality of each VOD relation with ffprobe and writes it "
         "into the relation's custom_properties, so every tool reading "
@@ -573,7 +573,7 @@ class Plugin:
         the series relation."""
         from apps.vod.tasks import refresh_series_episodes
 
-        from .contract import merge_inferred, series_marker, series_work
+        from .contract import is_measured, merge_inferred, series_marker, series_status, series_work
         from .plan import MODE_ALL, episodes_to_infer, plan_series, split_groups
 
         mode = self._mode(settings)
@@ -609,6 +609,7 @@ class Plugin:
         )
         seasons = len({season for _, _, season in rows})
         answered = 0          # groups that ended with a measured episode
+        exhausted = True      # no group left an episode untried without answering
         first_sample = None
         groups = split_groups(rows, mode)
         for entries in groups:
@@ -625,33 +626,39 @@ class Plugin:
                     representative, representative_props = rid, result["props"]
                     infer = episodes_to_infer(entries, rid)
                     break
-            if mode != MODE_ALL and representative is not None:
-                answered += 1
-                first_sample = first_sample or representative
-                if dry_run:
-                    out["inferred"] += len(infer)
-                else:
-                    out["inferred"] += self._write_many(
-                        episode_model, infer,
-                        lambda current: merge_inferred(current, representative_props, representative, now),
-                    )
+            if mode != MODE_ALL:
+                if representative is not None:
+                    answered += 1
+                    first_sample = first_sample or representative
+                    if dry_run:
+                        out["inferred"] += len(infer)
+                    else:
+                        out["inferred"] += self._write_many(
+                            episode_model, infer,
+                            lambda current: merge_inferred(current, representative_props, representative, now),
+                        )
+                elif group_plan["more_due"]:
+                    # The MAX_SAMPLE_TRIES cap left episodes of this group untried: not
+                    # this group's final answer yet, whatever the tried ones came back as.
+                    exhausted = False
 
         if not dry_run:
             last_modified = ((relation.custom_properties or {}).get("basic_data") or {}).get("last_modified")
             if mode == MODE_ALL:
-                complete_sample = rows[0][0] if rows and not out["errors"] else None
+                # No representative here: every due episode is tried every pass (no cap),
+                # so each is its own one-episode "group" — always exhausted after a pass.
+                total, sample_count = len(rows), sum(1 for _, cp, _ in rows if is_measured(cp)) + out["probed"]
+                complete_sample = rows[0][0] if rows and sample_count > 0 else None
             else:
-                complete_sample = first_sample if rows and answered == len(groups) else None
-            # Something was actually probed this pass, as opposed to nothing left to try:
-            # tells series_marker to answer "error" (a real answer) rather than "pending"
-            # (still to do) when no episode came back usable.
-            tried = (out["probed"] + out["errors"]) > 0
+                total, sample_count = len(groups), answered
+                complete_sample = first_sample
+            status = series_status(len(rows), sample_count, total, exhausted)
             self._write(
                 series_model, series_relation_id,
                 # The current time, not the start of the pass: the summary must be newer than
                 # the reload done above, or the series would look reloaded after it.
                 lambda current: series_marker(
-                    current, last_modified, len(rows), seasons, mode, complete_sample, datetime.now(timezone.utc), tried
+                    current, last_modified, len(rows), seasons, mode, complete_sample, datetime.now(timezone.utc), status
                 ),
             )
         return out
