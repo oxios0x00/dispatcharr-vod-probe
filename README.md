@@ -269,7 +269,7 @@ If a run fails after a Dispatcharr update, look at these first.
 
 ## Status
 
-Version 1.0.4. In daily use since 2026-09-21 on a Dispatcharr 0.31.0 instance that serves a Jellyfin library, with one Xtream Codes provider and a catalogue of about 600 movies, 900 series and 22,000 episodes. That covers a full first pass on movies and series, writes to the catalogue, disabling and re-enabling groups, failed probes and retries, Dispatcharr's own scheduled refreshes, and the plugin's scheduled runs with the retry switch on. Not tested with several providers or with a concurrency above 1.
+Version 1.0.4. In daily use since 2026-09-21 on a Dispatcharr 0.31.0 instance that serves a Jellyfin library, with one Xtream Codes provider and a catalogue of about 600 movies, 900 series and 22,000 episodes. That covers a full first pass on movies and series, writes to the catalogue, disabling and re-enabling groups, failed probes and retries, Dispatcharr's own scheduled refreshes, and the plugin's scheduled runs with the retry switch on. Also running since 2026-09-25 on a second, real production instance with about 1500 movies and 1500 series, without issue. Not tested with several providers or with a concurrency above 1.
 
 ## Development
 
@@ -282,6 +282,10 @@ python3 -m pytest
 Modules: `plugin.py` (actions and the run), `contract.py` (what is written and when a relation is due), `plan.py` (what to probe in a series), `breaker.py`, `state.py`, `probe.py` and `probe_summary.py` (the `ffprobe` call, adapted from [dispatcharr-vod-manager](https://github.com/oxios0x00/dispatcharr-vod-manager)).
 
 `python3 scripts/build_zip.py` builds `dist/vod_probe.zip`, the archive attached to each release, with everything in a `vod_probe/` folder so that Dispatcharr installs it under that name. The *Release ZIP* workflow runs the tests, builds it and attaches it when a release is published; it fails if `plugin.json`, `plugin.py` and `contract.py` do not all state the release's version.
+
+## See also
+
+[dispatcharr-vod-manager](https://github.com/oxios0x00/dispatcharr-vod-manager) is a companion Dispatcharr plugin that turns the VOD catalogue into a `.strm` library for Jellyfin/Emby, one file per kept quality version of each title. It reads this plugin's `probe` block to pick the best version and to know when a title is ready.
 
 ## License
 

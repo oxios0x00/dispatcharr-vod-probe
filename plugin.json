@@ -53,7 +53,7 @@
           "label": "Every episode individually"
         }
       ],
-      "help_text": "Every episode gets quality info either way; the rest are copied from a probed one and marked 'inferred'. See the README for cost and details."
+      "help_text": "Every episode gets quality info either way; the rest are copied from a probed one and marked 'inferred'."
     },
     {
       "id": "max_concurrent_probes",
@@ -122,7 +122,7 @@
     {
       "id": "retry_errors",
       "label": "Retry Errors",
-      "description": "Flags every failed relation so the next run tries them again. See README.",
+      "description": "Flags every failed relation so the next run tries them again.",
       "button_label": "Retry",
       "button_variant": "outline",
       "button_color": "orange"
@@ -130,7 +130,7 @@
     {
       "id": "reload_incomplete",
       "label": "Reload Incomplete Series",
-      "description": "Finds series versions with a suspiciously short episode list and flags them for reload. See README.",
+      "description": "Finds series versions with a suspiciously short episode list and flags them for reload.",
       "button_label": "Check",
       "button_variant": "outline",
       "button_color": "orange"

@@ -1,8 +1,8 @@
 """Small SQLite sidecar for what cannot live in the catalogue: the run lock,
 the pause flag and the progress of the current or last run.
 
-A plugin cannot declare Django models, so this follows vod-manager: one file
-in a vod_probe_data folder next to the plugin's own folder. Not inside it:
+A plugin cannot declare Django models, so this is one file in a
+vod_probe_data folder next to the plugin's own folder. Not inside it:
 updating a plugin replaces its whole folder (Dispatcharr renames the old one
 to a backup and deletes it once the new version is in place), and Dispatcharr
 has no other place for a plugin's data. A sibling folder survives the update.

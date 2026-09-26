@@ -15,9 +15,9 @@ scan read only series relations and open only the ones that changed.
 
 Probe Run runs in a Celery worker, not in the request that clicked it: a pass
 takes minutes, longer than the browser or nginx will wait, so a synchronous
-click ended in a 504 while the work carried on unseen (the same lesson as
-vod-manager). The click only queues the task; Run Status shows how far it got
-and Pause stops it after the relation in progress."""
+click ended in a 504 while the work carried on unseen. The click only queues
+the task; Run Status shows how far it got and Pause stops it after the
+relation in progress."""
 import json
 import os
 import threading
@@ -27,8 +27,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 # Sibling modules are imported inside methods, not at module top level, to
-# avoid stale references across a plugin reload cycle (same pattern as
-# vod-manager).
+# avoid stale references across a plugin reload cycle.
 
 
 # Dispatcharr sets the level and the handler of a few loggers only (apps, core.*,
@@ -43,7 +42,7 @@ def _release_db_connections():
     """Hands this thread's database connection back to Dispatcharr's pool.
     Under its gevent pool every worker thread checks a connection out on its
     first query and nobody returns it; batch after batch this filled the pool
-    and froze Dispatcharr (vod-manager, 2026-09-19)."""
+    and froze Dispatcharr."""
     from django.db import connections
 
     connections.close_all()
@@ -211,8 +210,8 @@ class Plugin:
 
     # --- schedule --------------------------------------------------------------
     #
-    # Dispatcharr has no scheduling API for plugins: like vod-manager, the plugin
-    # registers its own django-celery-beat PeriodicTask, which queues the same
+    # Dispatcharr has no scheduling API for plugins: the plugin registers its
+    # own django-celery-beat PeriodicTask, which queues the same
     # Celery task as the Probe Run button. The settings are copied when Apply is
     # clicked, so changing a setting afterwards needs Apply again. A scheduled
     # run, like any run, handles everything due, and never a fixed list of ids:
@@ -430,10 +429,9 @@ class Plugin:
             self.state.release_lock(self._LOCK)
 
     def _run_pass(self, settings, logger):
-        """Everything due, batch after batch, like vod-manager's Process: the
-        run only stops when nothing is left, on Pause, or when the circuit
-        breaker trips. Between batches it hands its database connection back
-        and reads what is due again."""
+        """Everything due, batch after batch: the run only stops when nothing
+        is left, on Pause, or when the circuit breaker trips. Between batches
+        it hands its database connection back and reads what is due again."""
         from .breaker import tripped as breaker_tripped
         from .contract import scrub_error
         from .plan import next_batch
@@ -516,8 +514,8 @@ class Plugin:
 
     def _run_unit(self, kind, unit_id, settings, timeout, limiter, now, logger, dry_run, force=False):
         """One movie relation or one series relation. One retry on the
-        transient gevent scheduling error seen in vod-manager ("This
-        operation would block forever")."""
+        transient gevent scheduling error ("This operation would block
+        forever")."""
         try:
             try:
                 return self._run_unit_once(kind, unit_id, settings, timeout, limiter, now, logger, dry_run, force)
@@ -668,9 +666,8 @@ class Plugin:
         """Merge into the relation's custom_properties under a row lock, so a
         list sync (which reads then rewrites this dictionary) cannot slip in
         between our read and our write. update(), not save(): a relation
-        deleted meanwhile (vod-manager prunes) is simply skipped, and
-        updated_at, which Dispatcharr uses, is left alone. Returns whether a
-        row was written."""
+        deleted meanwhile is simply skipped, and updated_at, which Dispatcharr
+        uses, is left alone. Returns whether a row was written."""
         from django.db import transaction
 
         with transaction.atomic():
@@ -979,8 +976,8 @@ def _add_outcome(total, part):
     total["error"] = total["error"] or part["error"]
 
 
-# Registered at import, like vod-manager's: the click only queues this task on
-# the Celery worker's "dvr" queue.
+# Registered at import: the click only queues this task on the Celery
+# worker's "dvr" queue.
 try:
     from celery import shared_task as _vod_probe_shared_task
 

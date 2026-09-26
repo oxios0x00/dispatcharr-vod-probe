@@ -1,8 +1,7 @@
 """A series whose every episode fails must end up "error", not stuck at
-"pending" forever: a real vod-manager report (2026-09-25) found series with
-every episode confirmed unreachable but still "pending", which Probe Run and
-Scan never picked up again — series_work freezes a non-"ok" summary the same
-way a failed relation is never retried on its own."""
+"pending" forever: series_work freezes a non-"ok" summary the same way a
+failed relation is never retried on its own, so without a terminal state a
+fully-failed series would never be picked up again by Probe Run or Scan."""
 import types
 
 from test_dry_run_write_safety import BASE_SETTINGS, Row, fake_django, run, with_plugin
@@ -78,13 +77,13 @@ def test_a_season_with_more_untried_episodes_than_the_sample_cap_stays_pending()
 
 
 def test_a_pending_series_keeps_progressing_across_runs_with_no_retry_errors():
-    """The exact production case (2026-09-25): a season with more due episodes
-    than MAX_SAMPLE_TRIES only got 3 tried, no matter how many Probe Runs
-    followed, because series_work froze the series at "pending" the same way
-    it freezes "error"/"partial" — Retry Errors kept re-arming the same 3
-    already-failed episodes ahead of the untried ones, in episode order, so
-    the untried tail was never reached. A "pending" series must keep sampling
-    on its own, with no Retry Errors at all, converging to a final status."""
+    """A season with more due episodes than MAX_SAMPLE_TRIES must not get
+    stuck after only its first 3 are tried: without this, series_work would
+    freeze the series at "pending" the same way it freezes "error"/"partial",
+    and Retry Errors would only re-arm the same 3 already-failed episodes
+    ahead of the untried ones (episode order), never reaching the untried
+    tail. A "pending" series must keep sampling on its own, with no Retry
+    Errors at all, converging to a final status."""
     with fake_django() as models:
         series = Row(id=10, custom_properties={"episodes_fetched": True}, last_episode_refresh=None)
         episodes = [episode(100 + n, 10, n) for n in range(1, 8)]  # 7 episodes, cap is 3

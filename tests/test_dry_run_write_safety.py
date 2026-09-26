@@ -1,7 +1,5 @@
 """A dry run must never write anything, and must never leave a relation in a
 state where the next real run treats it differently than a fresh one would.
-vod-manager once had a dry run write its queue's progress, which then blocked
-the real run scheduled after it.
 
 plugin.py uses relative imports (it is a package once installed), so it is
 loaded here as one, with the Django pieces it reaches into stood in for."""
