@@ -126,7 +126,7 @@ Each *version* of a series (the standard one, the 4K one, and so on) is a separa
    | Setting | What is probed | Cost |
    | --- | --- | --- |
    | *One episode per series version* (default) | The first probeable episode. Its result is copied to every other episode of that version. | One probe per version, whatever the number of seasons. |
-   | *One episode per season* | The first episode of each season, copied within its season. | One probe per season. Catches a season encoded differently from the others. |
+   | *One episode per season* | The first episode of each season, copied within its season. Up to 3 episodes are tried, one after the other, before a season with none that answer is settled as `error`. | One probe per season. Catches a season encoded differently from the others. |
    | *Every episode individually* | Each episode. | One probe per episode: hours on a big catalogue. |
 
 3. **Every episode ends up with an answer** in all three cases. A copy carries `status: "inferred"` and `inferred_from` (the id of the relation it was copied from) and no `duration_secs`, so a client can always tell a measurement from a deduction.
@@ -152,18 +152,11 @@ Probe Run is a Celery task on Dispatcharr's `dvr` queue, not part of the web req
 ## Install
 
 1. Download `vod_probe.zip` from the [latest release](https://github.com/oxios0x00/dispatcharr-vod-probe/releases/latest). In Dispatcharr, open *Plugins*, click **Import Plugin** and drop the ZIP. It installs into Dispatcharr's plugins directory (`/data/plugins` by default), in a folder named `vod_probe`.
-
-   Or clone the repository there yourself, in a folder of the same name:
-
-   ```bash
-   git clone https://github.com/oxios0x00/dispatcharr-vod-probe.git /data/plugins/vod_probe
-   ```
-
 2. Make sure `ffprobe` is on the container's `PATH` (Dispatcharr's image ships with it).
 3. Restart Dispatcharr once, so that its background worker picks the plugin up, then enable **VOD Probe** in *Plugins*.
 4. The plugin creates a `vod_probe_data` folder next to its own, in the same plugins directory (set `VOD_PROBE_DATA_DIR` to put it elsewhere). It keeps a small SQLite file there: the run lock, the pause flag, and the progress of the current run and the last report. No probe result is stored in it. The plugins directory must be writable by the user Dispatcharr runs as, which it is by default.
 
-To upgrade, import the new ZIP the same way and accept to replace the installed plugin, then restart Dispatcharr. Dispatcharr replaces the whole plugin folder, which is why the plugin's data lives next to it: the settings, the schedule, the probe results (in the catalogue) and `vod_probe_data` are all kept. Up to 0.10.0 that state lived in `vod_probe/data/`, inside the plugin folder: upgrading from such a version by importing the ZIP loses it once (**Run Status** starts empty, a pause is lifted). An install updated in place, with `git pull`, keeps it, and the plugin moves it to `vod_probe_data` the first time it starts.
+To upgrade, import the new ZIP the same way and accept to replace the installed plugin, then restart Dispatcharr. Dispatcharr replaces the whole plugin folder, which is why the plugin's data lives next to it: the settings, the schedule, the probe results (in the catalogue) and `vod_probe_data` are all kept. Up to 0.10.0 that state lived in `vod_probe/data/`, inside the plugin folder: upgrading from such a version by importing the ZIP loses it once (**Run Status** starts empty, a pause is lifted); the plugin moves it to `vod_probe_data` the first time it starts.
 
 To uninstall, click **[SCHEDULE] Remove** first (otherwise Celery keeps a nightly task for a plugin that is gone), delete the plugin in Dispatcharr, then the `vod_probe_data` folder, which Dispatcharr does not know about. What the plugin wrote into the catalogue stays there.
 
