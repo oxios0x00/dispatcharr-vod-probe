@@ -1,5 +1,10 @@
 # VOD Probe
 
+[![Tests](https://github.com/oxios0x00/dispatcharr-vod-probe/actions/workflows/tests.yml/badge.svg)](https://github.com/oxios0x00/dispatcharr-vod-probe/actions/workflows/tests.yml)
+[![Release](https://img.shields.io/github/v/release/oxios0x00/dispatcharr-vod-probe)](https://github.com/oxios0x00/dispatcharr-vod-probe/releases/latest)
+[![License: MIT](https://img.shields.io/github/license/oxios0x00/dispatcharr-vod-probe)](LICENSE)
+[![Dispatcharr](https://img.shields.io/badge/dispatcharr-%E2%89%A50.31.0-blue)](https://github.com/Dispatcharr/Dispatcharr)
+
 **Measure the real quality of your VOD catalogue once, and let every tool read it.**
 
 VOD Probe is a [Dispatcharr](https://github.com/Dispatcharr/Dispatcharr) plugin. It runs `ffprobe` against the movies and episodes Dispatcharr imported from your Xtream Codes providers, and writes the result into each relation's `custom_properties`. Anything that reads Dispatcharr's API (a media-server companion, another plugin, a script) can then use the real resolution, HDR type, codec and audio languages instead of guessing from a category name.
