@@ -11,11 +11,12 @@ from datetime import datetime, timedelta, timezone
 
 try:
     from .probe import PROBE_SCHEMA_VERSION, _AD_TITLE_HINTS
+    from .manifest import VERSION as PLUGIN_VERSION
 except ImportError:  # imported as a top-level module by the unit tests
     from probe import PROBE_SCHEMA_VERSION, _AD_TITLE_HINTS
+    from manifest import VERSION as PLUGIN_VERSION
 
 PLUGIN_SOURCE = "vod-probe"
-PLUGIN_VERSION = "1.0.4"
 
 STATUS_OK = "ok"
 STATUS_ERROR = "error"

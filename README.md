@@ -286,7 +286,7 @@ python3 -m pytest
 
 Modules: `plugin.py` (actions and the run), `contract.py` (what is written and when a relation is due), `plan.py` (what to probe in a series), `breaker.py`, `state.py`, `probe.py` and `probe_summary.py` (the `ffprobe` call, adapted from [dispatcharr-vod-manager](https://github.com/oxios0x00/dispatcharr-vod-manager)).
 
-`python3 scripts/build_zip.py` builds `dist/vod_probe.zip`, the archive attached to each release, with everything in a `vod_probe/` folder so that Dispatcharr installs it under that name. The *Release ZIP* workflow runs the tests, builds it and attaches it when a release is published; it fails if `plugin.json`, `plugin.py` and `contract.py` do not all state the release's version.
+`python3 scripts/build_zip.py` builds `dist/vod_probe.zip`, the archive attached to each release, with everything in a `vod_probe/` folder so that Dispatcharr installs it under that name. `plugin.json` is the only place the version is stated; `plugin.py` and `contract.py` derive theirs from it at import time (`manifest.py`). The *Release ZIP* workflow runs the tests, builds it and attaches it when a release is published; it fails if `plugin.json` does not state the release's version.
 
 ## See also
 
