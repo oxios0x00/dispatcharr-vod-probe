@@ -26,8 +26,14 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
+try:
+    from .manifest import AUTHOR, DESCRIPTION, HELP_URL, NAME, VERSION
+except ImportError:  # imported as a top-level module by the unit tests
+    from manifest import AUTHOR, DESCRIPTION, HELP_URL, NAME, VERSION
+
 # Sibling modules are imported inside methods, not at module top level, to
-# avoid stale references across a plugin reload cycle.
+# avoid stale references across a plugin reload cycle. manifest is the one
+# exception: it only reads a static JSON file, nothing to go stale.
 
 
 # Dispatcharr sets the level and the handler of a few loggers only (apps, core.*,
@@ -69,15 +75,11 @@ class _RateLimiter:
 
 
 class Plugin:
-    name = "VOD Probe"
-    version = "1.0.4"
-    description = (
-        "Probes the real quality of each VOD relation with ffprobe and writes it "
-        "into the relation's custom_properties, so every tool reading "
-        "Dispatcharr's API can use it."
-    )
-    author = "oxios0x00"
-    help_url = "https://github.com/oxios0x00/dispatcharr-vod-probe"
+    name = NAME
+    version = VERSION
+    description = DESCRIPTION
+    author = AUTHOR
+    help_url = HELP_URL
 
     SCHEDULED_TASK_CELERY_NAME = "vod_probe.run"
     SCHEDULE_TASK_NAME = "vod_probe.auto_run"
