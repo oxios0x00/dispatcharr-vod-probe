@@ -1,7 +1,7 @@
 {
   "name": "VOD Probe",
-  "version": "1.0.5",
-  "description": "Probes the real quality of each VOD relation (movies and every episode of every series version) with ffprobe in a background task and writes it into the relation's custom_properties, so every tool reading Dispatcharr's API can use it. Dry run by default.",
+  "version": "1.1.0",
+  "description": "Probes the real quality of each VOD relation (movies and every episode of every series version) with ffprobe in a background task and writes it into the relation's custom_properties, so every tool reading Dispatcharr's API can use it. Can also backfill missing tmdb_id/imdb_id from the provider's per-title detail endpoint, merging safely into an existing catalogue entry when one already has the id. Dry run by default.",
   "author": "oxios0x00",
   "license": "MIT",
   "help_url": "https://github.com/oxios0x00/dispatcharr-vod-probe",
@@ -96,6 +96,13 @@
       "help_text": "ffprobe gives up after this delay."
     },
     {
+      "id": "fetch_missing_ids",
+      "label": "Fetch missing tmdb_id/imdb_id",
+      "type": "boolean",
+      "default": false,
+      "help_text": "OFF by default. When ON, every Probe Run (scheduled or manual) also asks the provider's per-title detail endpoint for movies/series that have neither id — the same call Dispatcharr's own UI triggers when a title's card is opened. Fetch Missing IDs below always runs on click regardless of this setting."
+    },
+    {
       "id": "schedule_cron",
       "label": "Schedule (5-field cron)",
       "type": "string",
@@ -167,6 +174,14 @@
       "button_label": "Stats",
       "button_variant": "outline",
       "button_color": "blue"
+    },
+    {
+      "id": "fetch_missing_ids",
+      "label": "Fetch Missing IDs",
+      "description": "Starts a background run asking the provider for the tmdb_id/imdb_id of movies/series that have neither. Runs immediately regardless of the setting above; turn that on to also get this at the end of every Probe Run. Follow it with Run Status.",
+      "button_label": "Run",
+      "button_variant": "filled",
+      "button_color": "green"
     },
     {
       "id": "apply_schedule",

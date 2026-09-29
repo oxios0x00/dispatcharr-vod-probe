@@ -5,7 +5,9 @@ from datetime import datetime, timedelta, timezone
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from contract import (
-    build_probe_block, coverage_bucket, merge_failure, merge_success, needs_probe, quality_fields,
+    ID_LOOKUP_SCHEMA_VERSION, build_probe_block, coverage_bucket, flag_id_lookup_retry, merge_failure,
+    merge_id_error, merge_id_found, merge_id_not_found, merge_success, needs_id_lookup,
+    needs_probe, quality_fields,
 )
 from probe import PROBE_SCHEMA_VERSION
 
@@ -102,6 +104,47 @@ def test_coverage_bucket():
     assert coverage_bucket({}) == "never"
     assert coverage_bucket(merge_success({}, RESULT, NOW)) == "ok"
     assert coverage_bucket(merge_failure({}, "x", NOW)) == "error"
+
+
+def test_needs_id_lookup():
+    assert needs_id_lookup(False, {})
+    assert needs_id_lookup(False, None)
+    assert not needs_id_lookup(True, {})  # the real field already has it, no block needed
+    not_found = merge_id_not_found({}, NOW)
+    assert not needs_id_lookup(False, not_found)  # settled, not retried on its own
+    stale = {"id_lookup": {**not_found["id_lookup"], "schema_version": ID_LOOKUP_SCHEMA_VERSION - 1}}
+    assert needs_id_lookup(False, stale)
+
+
+def test_a_not_found_id_lookup_is_never_retried_on_its_own_only_when_flagged():
+    not_found = merge_id_not_found({}, NOW)
+    assert not_found["id_lookup"]["status"] == "not_found" and not_found["id_lookup"]["attempts"] == 1
+    assert not needs_id_lookup(False, not_found)
+    flagged = flag_id_lookup_retry(not_found)
+    assert flagged["id_lookup"]["retry"] is True and "retry" not in not_found["id_lookup"]  # input not mutated
+    assert needs_id_lookup(False, flagged)
+    again = merge_id_not_found(flagged, NOW)  # the retry happened and still nothing
+    assert "retry" not in again["id_lookup"] and again["id_lookup"]["attempts"] == 2
+    assert not needs_id_lookup(False, again)
+
+
+def test_merge_id_error_keeps_last_quality_and_scrubs_the_error():
+    existing = merge_success({}, RESULT, NOW)
+    failed = merge_id_error(existing, "timeout at http://user:pass@host/player_api.php?password=secret", NOW)
+    assert failed["quality"] == "4K"  # untouched, id_lookup is a sibling of probe/quality
+    assert failed["id_lookup"]["status"] == "error" and failed["id_lookup"]["attempts"] == 1
+    assert "secret" not in failed["id_lookup"]["error"] and "pass" not in failed["id_lookup"]["error"]
+
+
+def test_merge_id_found_clears_any_previous_marker():
+    not_found = merge_id_not_found({"basic_data": {"a": 1}}, NOW)
+    found = merge_id_found(not_found)
+    assert "id_lookup" not in found
+    assert found["basic_data"] == {"a": 1}  # other keys untouched
+
+
+def test_flag_id_lookup_retry_leaves_a_missing_block_alone():
+    assert flag_id_lookup_retry({}) == {}
 
 
 def test_error_never_carries_the_provider_url():

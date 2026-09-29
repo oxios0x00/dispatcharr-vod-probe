@@ -3,9 +3,9 @@ and when a relation is due for (re)probing. See README.md.
 
 Pure Python, no Django, so it is unit-tested outside Dispatcharr.
 
-Only three keys are ever written: `quality`, `resolution` and `probe`.
-Everything else in the dictionary (basic_data, detailed_info, the flags
-Dispatcharr keeps) is carried over untouched."""
+Only four keys are ever written: `quality`, `resolution`, `probe` and
+`id_lookup`. Everything else in the dictionary (basic_data, detailed_info,
+the flags Dispatcharr keeps) is carried over untouched."""
 import re
 from datetime import datetime, timedelta, timezone
 
@@ -23,6 +23,11 @@ STATUS_ERROR = "error"
 STATUS_UNREACHABLE = "unreachable"
 STATUS_INFERRED = "inferred"
 STATUS_PARTIAL = "partial"
+
+ID_LOOKUP_SCHEMA_VERSION = 1
+ID_STATUS_NOT_FOUND = "not_found"
+ID_STATUS_ERROR = "error"
+
 RELOAD_TOLERANCE = timedelta(seconds=2)
 # How many times a series loaded with no episode is asked for again before it is left alone.
 MAX_EMPTY_RELOADS = 3
@@ -412,3 +417,82 @@ def coverage_bucket(custom_properties):
     if block.get("status") == STATUS_OK:
         return "ok"
     return "inferred" if block.get("status") == STATUS_INFERRED else "error"
+
+
+def needs_id_lookup(has_id, custom_properties):
+    """Whether a relation is due for a tmdb_id/imdb_id lookup: it has neither
+    field set yet (`has_id` is the caller's own `bool(tmdb_id or imdb_id)`),
+    and the last lookup (if any) was not a settled not_found/error outcome
+    — or was, but Retry Errors flagged it since. A relation that
+    already has an id needs no lookup and no block; the real field is the
+    only signal that matters, the same way `probe` never gets a second
+    concept of "measured" alongside its own status."""
+    if has_id:
+        return False
+    block = (custom_properties or {}).get("id_lookup")
+    if not isinstance(block, dict):
+        return True
+    if block.get("schema_version") != ID_LOOKUP_SCHEMA_VERSION:
+        return True
+    return bool(block.get("retry"))
+
+
+def merge_id_found(existing):
+    """custom_properties once a lookup has resolved an id onto the real
+    field: any previous id_lookup marker is cleared, since the field itself
+    is now the only source of truth and a stale marker would otherwise keep
+    describing a problem that no longer exists."""
+    merged = dict(existing or {})
+    merged.pop("id_lookup", None)
+    return merged
+
+
+def merge_id_not_found(existing, now):
+    """custom_properties after a lookup whose provider genuinely has no
+    tmdb_id/imdb_id for this title. A terminal outcome, like a failed probe:
+    never retried on its own, only via an explicit Retry Errors action."""
+    merged = dict(existing or {})
+    previous = dict(merged.get("id_lookup") or {})
+    previous.pop("retry", None)
+    previous.pop("error", None)
+    previous.update(
+        schema_version=ID_LOOKUP_SCHEMA_VERSION,
+        looked_up_at=_iso(now),
+        status=ID_STATUS_NOT_FOUND,
+        attempts=int(previous.get("attempts") or 0) + 1,
+        source={"plugin": PLUGIN_SOURCE, "version": PLUGIN_VERSION},
+    )
+    merged["id_lookup"] = previous
+    return merged
+
+
+def merge_id_error(existing, error, now):
+    """custom_properties after a lookup that failed to even get an answer
+    from the provider (network/HTTP error, not "no id"). Same terminal,
+    Retry-Errors-only idiom as merge_id_not_found, plus the scrubbed error
+    text."""
+    merged = dict(existing or {})
+    previous = dict(merged.get("id_lookup") or {})
+    text = scrub_error(error or "unknown error")
+    previous.pop("retry", None)
+    previous.update(
+        schema_version=ID_LOOKUP_SCHEMA_VERSION,
+        looked_up_at=_iso(now),
+        status=ID_STATUS_ERROR,
+        error=text[:_ERROR_MAX_CHARS],
+        attempts=int(previous.get("attempts") or 0) + 1,
+        source={"plugin": PLUGIN_SOURCE, "version": PLUGIN_VERSION},
+    )
+    merged["id_lookup"] = previous
+    return merged
+
+
+def flag_id_lookup_retry(custom_properties):
+    """custom_properties with the id_lookup block (if any) marked so the next
+    run tries this relation again, whatever its status. A relation with no
+    block yet needs no flag, it is tried anyway."""
+    merged = dict(custom_properties or {})
+    block = merged.get("id_lookup")
+    if isinstance(block, dict):
+        merged["id_lookup"] = {**block, "retry": True}
+    return merged

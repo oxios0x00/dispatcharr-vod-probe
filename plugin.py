@@ -83,7 +83,7 @@ class Plugin:
 
     SCHEDULED_TASK_CELERY_NAME = "vod_probe.run"
     SCHEDULE_TASK_NAME = "vod_probe.auto_run"
-    _BACKGROUND_ACTIONS = {"probe_run", "reload_incomplete"}
+    _BACKGROUND_ACTIONS = {"probe_run", "reload_incomplete", "fetch_missing_ids"}
     # Reports read every relation's JSON, so they also run in the background, with
     # no lock and no pause check: they change nothing but a few flags. The result
     # goes to the notification centre.
@@ -124,6 +124,13 @@ class Plugin:
                 self._notify(
                     result["message"], result.get("status") == "error", title="VOD Probe: Reload Incomplete Series",
                     prefix=f"{self._REPORT_KEY_PREFIX}reload_incomplete-",
+                )
+                return result
+            if action_id == "fetch_missing_ids":
+                result = self._fetch_missing_ids_run(settings)
+                self._notify(
+                    result["message"], result.get("status") == "error", title="VOD Probe: Fetch Missing IDs",
+                    prefix=f"{self._REPORT_KEY_PREFIX}fetch_missing_ids-",
                 )
                 return result
             if action_id in self._REPORT_ACTIONS:
@@ -168,7 +175,10 @@ class Plugin:
             )
         except Exception as exc:  # noqa: BLE001 - reported to the user
             return {"status": "error", "message": f"Failed to queue the background run: {exc}"}
-        name = {"probe_run": "Probe Run", "reload_incomplete": "Reload Incomplete Series"}[action_id]
+        name = {
+            "probe_run": "Probe Run", "reload_incomplete": "Reload Incomplete Series",
+            "fetch_missing_ids": "Fetch Missing IDs",
+        }[action_id]
         return {
             "status": "ok",
             "message": f"{name} started in the background. Follow it with Run Status, stop it with Pause.",
@@ -423,6 +433,7 @@ class Plugin:
         acquired, held_since = self.state.try_acquire_lock(self._LOCK, self._LOCK_STALE_SECONDS)
         if not acquired:
             return self._busy_message(held_since)
+        self.state.set("lock_owner", "Probe Run")
         try:
             if scheduled:
                 self._apply_retry_switch(settings, logger)
@@ -505,13 +516,21 @@ class Plugin:
                 self.state.set("run", progress)
                 self.state.renew_lock(self._LOCK)
 
+        id_lookup_message = ""
+        if not stopped and bool(settings.get("fetch_missing_ids")):
+            id_lookup_message = self._run_id_lookups(settings, logger)
+
         progress["finished"] = time.time()
         if stopped and not progress["note"]:
             progress["note"] = "paused"
         self.state.set("run", progress)
         message = self._describe(progress)
+        short_message = self._describe(progress, short=True)
+        if id_lookup_message:
+            message += " | " + id_lookup_message
+            short_message += " | " + id_lookup_message
         logger.info("Probe Run finished: %s", message)
-        self._notify(self._describe(progress, short=True), stopped)
+        self._notify(short_message, stopped)
         return {"status": "ok", "message": message}
 
     def _run_unit(self, kind, unit_id, settings, timeout, limiter, now, logger, dry_run, force=False):
@@ -750,8 +769,10 @@ class Plugin:
                     f"{state}: {progress['processed']}/{progress['total']} handled, "
                     f"{progress['errors']} errors (last activity {idle}s ago)"
                 )}
-            # The same lock covers the other long job.
-            return {"status": "ok", "message": f"Reload Incomplete Series is running (last activity {idle}s ago)"}
+            # The same lock also covers Reload Incomplete Series and Fetch Missing IDs,
+            # neither of which keeps a live "run" progress dict like Probe Run does.
+            owner = self.state.get("lock_owner") or "Another job"
+            return {"status": "ok", "message": f"{owner} is running (last activity {idle}s ago)"}
         suffix = " | Paused: use Resume" if paused else ""
         if not progress:
             return {"status": "ok", "message": f"No run yet{suffix}"}
@@ -868,6 +889,7 @@ class Plugin:
         acquired, held_since = self.state.try_acquire_lock(self._LOCK, self._LOCK_STALE_SECONDS)
         if not acquired:
             return self._busy_message(held_since)
+        self.state.set("lock_owner", "Reload Incomplete Series")
         try:
             from core.xtream_codes import Client
 
@@ -909,6 +931,204 @@ class Plugin:
             return {"status": "ok", "message": message}
         finally:
             self.state.release_lock(self._LOCK)
+
+    def _fetch_missing_ids_run(self, settings):
+        """The manual 'Fetch Missing IDs' button: runs right now regardless
+        of the setting below, the same way Retry Errors always runs when
+        clicked regardless of "Retry errors at the next scheduled run".
+        The setting is what makes this happen automatically too, at the end
+        of every Probe Run (scheduled or manual) — see _run_pass."""
+        import logging
+
+        logger = logging.getLogger(LOGGER_NAME)
+        acquired, held_since = self.state.try_acquire_lock(self._LOCK, self._LOCK_STALE_SECONDS)
+        if not acquired:
+            return self._busy_message(held_since)
+        self.state.set("lock_owner", "Fetch Missing IDs")
+        try:
+            message = self._run_id_lookups(settings, logger)
+            logger.info(message)
+            return {"status": "ok", "message": message}
+        finally:
+            self.state.release_lock(self._LOCK)
+
+    def _run_id_lookups(self, settings, logger):
+        """Ask the provider's per-title detail endpoint for the tmdb_id/imdb_id
+        of movie/series relations whose catalogue row has neither, and write
+        the id straight onto the real field — never into custom_properties.
+        See contract.py (the id_lookup marker, for not_found/error outcomes
+        only) and idmatch.py (which existing row survives on a collision).
+        Assumes the caller already holds self._LOCK."""
+        from core.xtream_codes import Client
+
+        dry_run = bool(settings.get("dry_run", True))
+        limiter = _RateLimiter(float(settings.get("max_probes_per_second", 2) or 0))
+        now = datetime.now(timezone.utc)
+        counts = Counter()
+        for kind, relation_ids in (("movies", self._movies_missing_ids()), ("series", self._series_missing_ids())):
+            for rid in relation_ids:
+                if self.state.is_paused():
+                    break
+                limiter.wait()
+                outcome = self._lookup_relation_ids(kind, rid, Client, now, logger, dry_run)
+                counts[f"{kind}: {outcome}"] += 1
+                self.state.renew_lock(self._LOCK)
+                _release_db_connections()
+        verb = "would find/write" if dry_run else "found/wrote"
+        text = ", ".join(f"{n} {label}" for label, n in sorted(counts.items())) or "nothing due"
+        return f"Fetch Missing IDs: {verb} — {text}."
+
+    def _movies_missing_ids(self):
+        from .contract import needs_id_lookup
+
+        _, movie_model = self._relation_models()[0]
+        return [
+            rid
+            for rid, tmdb_id, imdb_id, properties in self._active_relations(movie_model).values_list(
+                "id", "movie__tmdb_id", "movie__imdb_id", "custom_properties"
+            ).iterator()
+            if needs_id_lookup(bool(tmdb_id or imdb_id), properties)
+        ]
+
+    def _series_missing_ids(self):
+        from .contract import needs_id_lookup
+
+        series_model = self._series_model()
+        return [
+            rid
+            for rid, tmdb_id, imdb_id, properties in self._active_relations(series_model).values_list(
+                "id", "series__tmdb_id", "series__imdb_id", "custom_properties"
+            ).iterator()
+            if needs_id_lookup(bool(tmdb_id or imdb_id), properties)
+        ]
+
+    def _lookup_relation_ids(self, kind, relation_id, Client, now, logger, dry_run):
+        """One relation whose catalogue row has neither id: fetch the
+        provider's detail, and either write the id directly (nothing else in
+        the catalogue has it yet) or merge safely into whichever existing row
+        already does (idmatch.resolve_targets — the older row always
+        survives, so the outcome never depends on processing order).
+
+        For series, every Series merged away first has its episodes
+        reconciled onto the survivor (_reconcile_episodes): Episode.series is
+        on_delete=CASCADE, so deleting a losing Series outright would destroy
+        its episodes and their probe data. This is the normal case, not an
+        edge case, as soon as two providers carry the same title under
+        different names (Ticket Dispatcharr - fusion movie-id dans le
+        mauvais sens / rattrapage en masse)."""
+        from django.db import transaction
+
+        from .contract import merge_id_error, merge_id_found, merge_id_not_found
+        from .idmatch import extract_movie_ids, extract_series_ids, resolve_targets
+
+        if kind == "movies":
+            _, model = self._relation_models()[0]
+            attr = "movie"
+        else:
+            model = self._series_model()
+            attr = "series"
+
+        relation = model.objects.select_related("m3u_account", attr).filter(id=relation_id).first()
+        if relation is None:
+            return "gone"
+        catalog_row = getattr(relation, attr)
+        if catalog_row.tmdb_id or catalog_row.imdb_id:
+            return "had one already"  # resolved by something else meanwhile
+
+        account = relation.m3u_account
+        try:
+            with Client(account.server_url, account.username, account.password, account.get_user_agent_string()) as client:
+                data = (
+                    client.get_vod_info(relation.stream_id) if kind == "movies"
+                    else client.get_series_info(relation.external_series_id)
+                )
+        except Exception as exc:  # noqa: BLE001 - counted, never fatal for the run
+            if not dry_run:
+                error_text = f"{type(exc).__name__}: {exc}"
+                self._write(model, relation_id, lambda current: merge_id_error(current, error_text, now))
+            return "errors"
+
+        info = (data or {}).get("info") or {}
+        if isinstance(info, list):
+            info = info[0] if info and isinstance(info[0], dict) else {}
+        tmdb_id, imdb_id = extract_movie_ids(info) if kind == "movies" else extract_series_ids(info)
+        if not tmdb_id and not imdb_id:
+            if not dry_run:
+                self._write(model, relation_id, lambda current: merge_id_not_found(current, now))
+            return "not found"
+
+        catalog_model = type(catalog_row)
+        tmdb_match = catalog_model.objects.filter(tmdb_id=tmdb_id).exclude(id=catalog_row.id).first() if tmdb_id else None
+        imdb_match = catalog_model.objects.filter(imdb_id=imdb_id).exclude(id=catalog_row.id).first() if imdb_id else None
+        survivor, absorbed = resolve_targets(tmdb_match, imdb_match)
+
+        verb = "would set" if dry_run else "set"
+        (logger.info if dry_run else logger.debug)(
+            "vod-probe id lookup, %s relation %s %s tmdb_id=%s imdb_id=%s", kind, relation_id, verb, tmdb_id, imdb_id
+        )
+        if dry_run:
+            return "found"
+
+        from apps.vod.tasks import merge_movie_data, merge_series_data
+
+        merge_fn = merge_movie_data if kind == "movies" else merge_series_data
+        source_kw, target_kw = ("source_movie", "target_movie") if kind == "movies" else ("source_series", "target_series")
+
+        def _absorb(source):
+            """source's episodes (series only) and relations move onto
+            target, then source is deleted — safe once nothing still points
+            to it."""
+            if kind == "series":
+                self._reconcile_episodes(source, target)
+            merge_fn(**{source_kw: source, target_kw: target, "tmdb_id_to_set": tmdb_id, "imdb_id_to_set": imdb_id})
+            source.m3u_relations.all().update(**{attr: target})
+            source.delete()
+
+        with transaction.atomic():
+            target = survivor or catalog_row
+            for loser in absorbed:
+                loser.tmdb_id = None
+                loser.imdb_id = None
+                loser.save(update_fields=["tmdb_id", "imdb_id"])
+                _absorb(loser)
+            if survivor is not None:
+                _absorb(catalog_row)
+            else:
+                catalog_row.tmdb_id = tmdb_id or catalog_row.tmdb_id
+                catalog_row.imdb_id = imdb_id or catalog_row.imdb_id
+                catalog_row.save(update_fields=["tmdb_id", "imdb_id"])
+        self._write(model, relation_id, merge_id_found)
+        return "found"
+
+    @staticmethod
+    def _reconcile_episodes(loser_series, target_series):
+        """Move every Episode of loser_series onto target_series before
+        loser_series is deleted. Episode has a (series, season_number,
+        episode_number) unique_together, so an episode target_series
+        already has (e.g. both providers had season 1 episode 1, each
+        imported separately) is merged into instead of just reassigned:
+        its relations move onto the existing episode, filling only the
+        fields the existing one is missing, the same rule merge_movie_data
+        already uses — then the now-relation-less duplicate is deleted."""
+        for episode in list(loser_series.episodes.all()):
+            existing = target_series.episodes.filter(
+                season_number=episode.season_number, episode_number=episode.episode_number
+            ).first()
+            if existing is None:
+                episode.series = target_series
+                episode.save(update_fields=["series"])
+                continue
+            for field in ("description", "rating", "air_date", "duration_secs", "tmdb_id", "imdb_id"):
+                if not getattr(existing, field) and getattr(episode, field):
+                    setattr(existing, field, getattr(episode, field))
+            existing_props = existing.custom_properties or {}
+            for key, value in (episode.custom_properties or {}).items():
+                if value and not existing_props.get(key):
+                    existing_props[key] = value
+            existing.custom_properties = existing_props
+            existing.save()
+            episode.m3u_relations.all().update(episode=existing)
+            episode.delete()
 
     def _retry_errors(self):
         """Flag the failed relations so the next run (scheduled or manual) tries
