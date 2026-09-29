@@ -9,7 +9,7 @@
 
 VOD Probe is a [Dispatcharr](https://github.com/Dispatcharr/Dispatcharr) plugin. It runs `ffprobe` against the movies and episodes Dispatcharr imported from your Xtream Codes providers, and writes the result into each relation's `custom_properties`. Anything that reads Dispatcharr's API (a media-server companion, another plugin, a script) can then use the real resolution, HDR type, codec and audio languages instead of guessing from a category name.
 
-It does not delete, merge or rename anything, and it does not write `.strm` files. It only adds information.
+It does not write `.strm` files. Besides measuring quality, it can optionally backfill a missing `tmdb_id`/`imdb_id` from your provider (see [Missing tmdb_id/imdb_id](#missing-tmdb_idimdb_id)); that is the one case where it merges two catalogue rows and deletes the one left empty, and only that case — everything else only adds information.
 
 ## Why
 
@@ -115,6 +115,50 @@ If you build on this data, these are the rules:
 - **`quality`** (next to `probe`) uses Dispatcharr's own vocabulary, so `quality_info` keeps working.
 - **Data can be missing for a while.** When Dispatcharr reloads a series, it erases what was written on its episodes until the next run (see [below](#dispatcharr-can-erase-what-was-written-on-episodes)). A consumer should treat a missing block as "not measured yet", not as an error.
 
+## Missing tmdb_id/imdb_id
+
+Dispatcharr fills `tmdb_id`/`imdb_id` only from what your provider's bulk listing (`get_vod_streams`/`get_series`) includes at import time. Some providers omit it there for some or all of their catalogue, even though their per-title detail endpoint (`get_vod_info`/`get_series_info` — the same call Dispatcharr's own UI makes when you open a title's card) does have it. Without ever opening every title by hand, that id stays null forever.
+
+**Fetch Missing IDs** (action) and its companion setting ask that detail endpoint for every movie/series relation whose catalogue row has neither id, and write the id straight onto the real field (`Movie.tmdb_id`/`imdb_id`, or the `Series` equivalent) — never into `custom_properties`. Turning the setting on also runs this automatically at the end of every **Probe Run** (scheduled or manual); the button itself always runs on click regardless of the setting, the same way **Retry Errors** does.
+
+### Why this sometimes means a merge
+
+A provider that only exposes an id on its per-title endpoint is exactly the situation that produces catalogue duplicates: the same title, imported once from a provider that gave Dispatcharr an id at bulk-import time (a clean match), and once more from a provider that did not (a separate row, under whatever name that provider used, often formatted quite differently — `EN - Movie Name - 2019` instead of `Movie Name (2019)`).
+
+When the id this plugin resolves already belongs to a different existing row, it merges the two instead of creating a second row with a duplicate id (which the database would refuse anyway — `tmdb_id`/`imdb_id` are unique). It reuses Dispatcharr's own `merge_movie_data`/`merge_series_data`, but the pre-existing row is always the target, never whichever relation this run happens to process — the same field-filling logic Dispatcharr already trusts, without the ordering bug described below. In the rarer case where the resolved `tmdb_id` and `imdb_id` belong to two *different* existing rows (each provider having independently supplied one but not the other, at different times), the older of the two rows (the one created first) is the target and the other is absorbed too, so the outcome never depends on which relation a given run happens to reach first.
+
+For a series merge, every episode of the row being absorbed is moved onto the survivor first — matched onto an existing episode with the same season/episode number when there is one (merging their relations and data), or simply reassigned when there is not. This has to happen before the losing `Series` row is deleted: `Episode.series` is `on_delete=CASCADE` in Dispatcharr, so deleting it outright would silently destroy its episodes and whatever this plugin had already measured on them.
+
+*(Dispatcharr's own `handle_movie_id_conflicts`/`handle_series_id_conflicts` always keep "the row currently being edited" and never merge the `name` field — correct for its interactive use, a user actively looking at a title, but not something this plugin calls: a background pass has no such row, and using it would make the survivor an accident of processing order. This plugin resolves the conflict itself instead, as described above.)*
+
+### The `id_lookup` marker
+
+A lookup that does not end in an id written to the real field leaves a small marker in `custom_properties.id_lookup`, so the same relation is not asked again on every run:
+
+```json
+"id_lookup": {
+  "schema_version": 1,
+  "status": "not_found",
+  "looked_up_at": "2026-09-28T17:09:24Z",
+  "attempts": 1,
+  "source": { "plugin": "vod-probe", "version": "1.1.0" }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `status` | `not_found`: the provider's detail response has neither id. `error`: the request itself failed (network, provider error) — `error` also holds the short, credential-stripped message. |
+| `attempts` | How many times a lookup ended this way. |
+| `retry` | Set by **Retry Errors**; makes the next run try again regardless of status. |
+
+A relation that already has a `tmdb_id`/`imdb_id` needs no marker and gets none — the real field is the only thing that matters once it is set, the same principle as `probe`/`quality`/`resolution`.
+
+### Some providers never send it, for some content types
+
+Confirmed live on a real catalogue: one provider's per-title detail response for **movies** included `tmdb_id`, but the **same provider's** response for **series** had no id-shaped field at all — not `tmdb`, not `imdb`, nothing — on every series checked. This is a limitation of that provider, not of this plugin or of Dispatcharr: there is nothing left to ask for, at any interval, no matter how many times **Retry Errors** is used. Those relations settle on `status: "not_found"` and stay there.
+
+This plugin never falls back to searching TMDB by title and year on its own: a provider's own detail endpoint is data the provider itself vouches for, but a name-based guess can silently attach the *wrong* id — worse than having none. If a provider never supplies an id for some of its content, the only options are excluding those titles downstream (a `.strm`-generation plugin's own "require an id" setting, for instance) or building a separate, explicitly opt-in name-matching feature with its own confidence handling — not something this plugin does.
+
 ## How it works
 
 ### Movies
@@ -187,6 +231,7 @@ Keep **Dry run** on for the first step.
 | Stop when the error ratio exceeds | 0.8 | The circuit breaker: after 5 probes, a run whose failures exceed this share pauses itself instead of hammering a failing provider. See [Failures](#failures). |
 | Retry errors at the next scheduled run | off | One-shot: the next scheduled run tries the failed relations again, then the switch turns itself off. |
 | Probe timeout (seconds) | 25 | `ffprobe` gives up after this delay. |
+| Fetch missing tmdb_id/imdb_id | off | When on, every Probe Run also runs **Fetch Missing IDs** (below) at the end. See [Missing tmdb_id/imdb_id](#missing-tmdb_idimdb_id). |
 | Schedule (5-field cron) | empty | Empty means no schedule. See [Scheduling](#scheduling). |
 
 ## Actions
@@ -198,11 +243,12 @@ Keep **Dry run** on for the first step.
 | **Pause** / **Resume** | Stop a run after the relation in progress and block new ones until resumed. The circuit breaker pauses the same way. |
 | **Retry Errors** | Flags every failed relation (and series version left pending) so the next run tries it again. |
 | **Reload Incomplete Series** | Finds series versions holding fewer episodes than another version of the same series, asks the provider how many it lists, and flags those where it lists more, so the next run asks for their episode list again. Background task; a dry run only reports. See [Incomplete episode lists](#incomplete-episode-lists). |
+| **Fetch Missing IDs** | Backfills `tmdb_id`/`imdb_id` for movies/series that have neither. Runs immediately on click regardless of the setting above. See [Missing tmdb_id/imdb_id](#missing-tmdb_idimdb_id). |
 | **Scan** | Counts what is due and why. Writes nothing. |
 | **Coverage Stats** | How many relations have an answer, split into measured and inferred, with the tiers found. |
 | **[SCHEDULE] Apply / Remove / Status** | Manage the periodic run. |
 
-**Scan**, **Coverage Stats**, **Retry Errors** and **Reload Incomplete Series** also run in the background, because they read every relation. The click returns at once; their result appears in Dispatcharr's notification centre. A notification is also sent when a run ends; **Run Status** gives the details of that run, or the progress of the one in flight.
+**Scan**, **Coverage Stats**, **Retry Errors**, **Reload Incomplete Series** and **Fetch Missing IDs** also run in the background, because they read every relation. The click returns at once; their result appears in Dispatcharr's notification centre. A notification is also sent when a run ends; **Run Status** gives the details of that run, or the progress of the one in flight.
 
 ## Scheduling
 
@@ -258,6 +304,7 @@ Each probe is a real stream connection, and each series version costs one metada
 - **The provider's own technical fields are not used.** For episodes, some providers send video, audio and bitrate data with the episode list. VOD Probe does not read it: it measures the stream itself.
 - **Detecting a new episode relies on `last_modified`.** It is the provider's own timestamp on each series, and whether a provider bumps it when an episode is added depends on that provider.
 - **The UI shows less than the API.** From reading Dispatcharr's front-end code, its interface uses `quality_info` only in the label of each source of a movie, and its "Technical Details" panel reads the provider's own data, not the plugin's. Cards and lists show no quality.
+- **A provider that never sends an id for some of its content stays unresolved.** Confirmed live: one provider's per-title detail response has no id-shaped field at all for its series, while the same provider's movies do carry one. Nice-looking cover art, plot or cast in Dispatcharr's UI does not mean an id was found — some providers source that display content from TMDB themselves without ever exposing the id, and Dispatcharr never searches TMDB on its own either. See [Some providers never send it](#some-providers-never-send-it-for-some-content-types).
 
 ## Compatibility
 
@@ -274,7 +321,7 @@ If a run fails after a Dispatcharr update, look at these first.
 
 ## Status
 
-Version 1.0.4. In daily use since 2026-09-21 on a Dispatcharr 0.31.0 instance that serves a Jellyfin library, with one Xtream Codes provider and a catalogue of about 600 movies, 900 series and 22,000 episodes. That covers a full first pass on movies and series, writes to the catalogue, disabling and re-enabling groups, failed probes and retries, Dispatcharr's own scheduled refreshes, and the plugin's scheduled runs with the retry switch on. Also running since 2026-09-25 on a second, real production instance with about 1500 movies and 1500 series, without issue. Not tested with several providers or with a concurrency above 1.
+Version 1.1.0. In daily use since 2026-09-21 on a Dispatcharr 0.31.0 instance that serves a Jellyfin library, with one Xtream Codes provider and a catalogue of about 600 movies, 900 series and 22,000 episodes. That covers a full first pass on movies and series, writes to the catalogue, disabling and re-enabling groups, failed probes and retries, Dispatcharr's own scheduled refreshes, and the plugin's scheduled runs with the retry switch on. Also running since 2026-09-25 on a second, real production instance with about 1500 movies and 1500 series, without issue. Fetch Missing IDs verified live on that second instance after a second provider was added: 987/990 movies missing an id recovered one, 110 via a real merge. General probing itself is not tested with several providers, or with a concurrency above 1.
 
 ## Development
 
@@ -284,7 +331,7 @@ The pure logic (the data contract, the season and series planning, the circuit b
 python3 -m pytest
 ```
 
-Modules: `plugin.py` (actions and the run), `contract.py` (what is written and when a relation is due), `plan.py` (what to probe in a series), `breaker.py`, `state.py`, `probe.py` and `probe_summary.py` (the `ffprobe` call, adapted from [dispatcharr-vod-manager](https://github.com/oxios0x00/dispatcharr-vod-manager)).
+Modules: `plugin.py` (actions and the run), `contract.py` (what is written and when a relation is due), `idmatch.py` (extracting tmdb_id/imdb_id from a provider's detail response, and which existing row survives a collision — see [Missing tmdb_id/imdb_id](#missing-tmdb_idimdb_id)), `plan.py` (what to probe in a series), `breaker.py`, `state.py`, `probe.py` and `probe_summary.py` (the `ffprobe` call, adapted from [dispatcharr-vod-manager](https://github.com/oxios0x00/dispatcharr-vod-manager)).
 
 `python3 scripts/build_zip.py` builds `dist/vod_probe.zip`, the archive attached to each release, with everything in a `vod_probe/` folder so that Dispatcharr installs it under that name. `plugin.json` is the only place the version is stated; `plugin.py` and `contract.py` derive theirs from it at import time (`manifest.py`). The *Release ZIP* workflow runs the tests, builds it and attaches it when a release is published; it fails if `plugin.json` does not state the release's version.
 
