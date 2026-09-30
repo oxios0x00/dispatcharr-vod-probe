@@ -59,7 +59,9 @@ def test_summary_keeps_the_details_worth_having_later():
                              "sample_rate": "48000", "language": "eng", "title": "Dolby Atmos",
                              "flags": ["default"]}
     assert "title" not in s["audio"][1]
-    assert s["subtitles"] == {"codecs": {"subrip": 30}, "forced": 1}
+    assert len(s["subtitle"]) == 30
+    assert s["subtitle"][0] == {"codec_name": "subrip", "language": "eng", "flags": ["forced"]}
+    assert s["subtitle"][1] == {"codec_name": "subrip", "language": "eng"}
     assert s["format"]["format_name"] == "matroska,webm" and "probe_score" not in s["format"]
 
 
@@ -70,4 +72,4 @@ def test_summary_is_a_small_fraction_of_the_raw_output():
 
 def test_summary_of_nothing_is_empty_but_valid():
     s = summarize_probe(None)
-    assert s == {"format": {}, "video": [], "audio": []}
+    assert s == {"format": {}, "video": [], "audio": [], "subtitle": []}

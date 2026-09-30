@@ -127,6 +127,22 @@ def _audio_tracks(summary):
     return tracks
 
 
+def _subtitle_tracks(summary):
+    tracks = []
+    for stream in summary.get("subtitle") or []:
+        flags = stream.get("flags") or []
+        track = {
+            "codec": stream.get("codec_name"),
+            "language": stream.get("language", "und"),
+        }
+        if "forced" in flags:
+            track["forced"] = True
+        if "hearing_impaired" in flags:
+            track["hearing_impaired"] = True
+        tracks.append({k: v for k, v in track.items() if v is not None})
+    return tracks
+
+
 def _video_block(result, summary):
     video = (summary.get("video") or [{}])[0]
     block = {
@@ -143,6 +159,7 @@ def build_probe_block(result, now):
     """The `probe` block for a successful probe_stream() result."""
     summary = result.get("summary") or {}
     audio = _audio_tracks(summary)
+    subtitles = _subtitle_tracks(summary)
     block = {
         "schema_version": PROBE_SCHEMA_VERSION,
         "probed_at": _iso(now),
@@ -150,10 +167,13 @@ def build_probe_block(result, now):
         "tier": result.get("quality_label") or "unknown",
         "hdr": result.get("hdr_type") or "sdr",
         "video": _video_block(result, summary),
-        # `audio_languages` is the flat, de-duplicated list a client filters on;
-        # `audio` keeps every track (a missing audio_description means false).
+        # `audio_languages`/`subtitle_languages` are the flat, de-duplicated lists
+        # a client filters on; `audio`/`subtitle` keep every track (a missing
+        # audio_description/forced/hearing_impaired means false).
         "audio_languages": list(dict.fromkeys(track["language"] for track in audio)),
         "audio": audio,
+        "subtitle_languages": list(dict.fromkeys(track["language"] for track in subtitles)),
+        "subtitle": subtitles,
         "duration_secs": result.get("duration_secs"),
         "container": (summary.get("format") or {}).get("format_name"),
         "bit_rate": _container_bit_rate(summary),

@@ -6,6 +6,7 @@ import types
 
 from test_dry_run_write_safety import BASE_SETTINGS, Row, fake_django, run, with_plugin
 from vod_probe_pkg.contract import series_work
+from vod_probe_pkg.probe import PROBE_SCHEMA_VERSION
 
 
 def episode(id, series_relation_id, n=1):
@@ -50,7 +51,7 @@ def test_a_series_with_nothing_left_to_try_at_all_is_error_even_reached_indirect
     when the failure happened."""
     with fake_django() as models:
         series = Row(id=10, custom_properties={"episodes_fetched": True}, last_episode_refresh=None)
-        already_failed = Row(id=101, custom_properties={"probe": {"status": "unreachable", "schema_version": 5}},
+        already_failed = Row(id=101, custom_properties={"probe": {"status": "unreachable", "schema_version": PROBE_SCHEMA_VERSION}},
                               series_relation_id=10, episode=types.SimpleNamespace(season_number=1, episode_number=1))
         models.M3USeriesRelation.objects.rows.append(series)
         models.M3UEpisodeRelation.objects.rows.append(already_failed)

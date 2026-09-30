@@ -28,6 +28,10 @@ RESULT = {
             {"codec_name": "eac3", "channels": 6, "language": "fre"},
             {"codec_name": "aac", "channels": 2, "language": "fre", "flags": ["visual_impaired"]},
         ],
+        "subtitle": [
+            {"codec_name": "subrip", "language": "eng"},
+            {"codec_name": "subrip", "language": "fre", "flags": ["forced"]},
+        ],
     },
 }
 
@@ -54,6 +58,11 @@ def languages(properties):
     return [t.get("language", "und") for t in tracks if not t.get("audio_description")]
 
 
+def subtitle_languages(properties):
+    tracks = (block(properties) or {}).get("subtitle") or []
+    return [t.get("language", "und") for t in tracks]
+
+
 def series_answered(properties):
     found = block(properties)
     return bool(found) and found.get("status") == "ok"
@@ -63,7 +72,7 @@ def series_answered(properties):
 
 DOCUMENTED_RELATION_FIELDS = {
     "schema_version", "status", "probed_at", "tier", "hdr", "video", "bit_rate",
-    "audio_languages", "audio", "duration_secs", "container", "source",
+    "audio_languages", "audio", "subtitle_languages", "subtitle", "duration_secs", "container", "source",
 }
 DOCUMENTED_SERIES_FIELDS = {
     "schema_version", "status", "probed_at", "last_modified", "episodes", "seasons", "mode", "sampled_from", "source",
@@ -77,6 +86,9 @@ def test_a_measured_relation_carries_every_documented_field():
     assert usable_tier(props) == "2160p" and not failed(props)
     assert languages(props) == ["eng", "fre"]  # the audio-description track is not a language
     assert props["probe"]["audio_languages"] == ["eng", "fre"]
+    assert subtitle_languages(props) == ["eng", "fre"]
+    assert props["probe"]["subtitle_languages"] == ["eng", "fre"]
+    assert props["probe"]["subtitle"][1]["forced"] is True
     assert props["probe"]["bit_rate"] == 17_034_152 and props["probe"]["video"]["bit_rate"] == 13_954_901
 
 

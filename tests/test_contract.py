@@ -16,7 +16,7 @@ NOW = datetime(2026, 9, 21, 12, 0, 0, tzinfo=timezone.utc)
 RESULT = {
     "ok": True, "width": 3840, "height": 1608, "quality_label": "2160p",
     "video_codec": "hevc", "video_bitrate": 18_000_000, "hdr_type": "dolby_vision",
-    "subtitle_languages": ["fre", "eng"], "duration_secs": 7200.5,
+    "duration_secs": 7200.5,
     "summary": {
         "format": {"format_name": "matroska,webm", "bit_rate": "19762136"},
         "video": [{"profile": "Main 10", "pix_fmt": "yuv420p10le", "avg_frame_rate": "24000/1001"}],
@@ -24,7 +24,10 @@ RESULT = {
             {"codec_name": "eac3", "channels": 6, "language": "fre"},
             {"codec_name": "aac", "channels": 2, "language": "fre", "flags": ["visual_impaired"]},
         ],
-        "subtitles": {"codecs": {"subrip": 2}},
+        "subtitle": [
+            {"codec_name": "subrip", "language": "fre"},
+            {"codec_name": "subrip", "language": "eng", "flags": ["forced"]},
+        ],
     },
 }
 
@@ -48,7 +51,9 @@ def test_probe_block_details():
     assert "audio_description" not in block["audio"][0]
     assert block["audio"][1]["audio_description"] is True
     assert block["audio_languages"] == ["fre"]
-    assert "subtitles" not in block
+    assert "forced" not in block["subtitle"][0]
+    assert block["subtitle"][1]["forced"] is True
+    assert block["subtitle_languages"] == ["fre", "eng"]
     assert block["container"] == "matroska,webm"
     assert block["bit_rate"] == 19_762_136
 

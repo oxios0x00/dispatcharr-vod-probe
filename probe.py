@@ -23,7 +23,7 @@ except ImportError:  # imported as a top-level module by the unit tests
 # NOTES.md point 12: discovered when video_bitrate was added and existing
 # cached rows kept showing bitrate=None for files that genuinely had a
 # usable BPS tag, because they were probed before that extraction existed.
-PROBE_SCHEMA_VERSION = 5  # vod-probe's own numbering: 5 = compact audio, no subtitles, adds probe.audio_languages
+PROBE_SCHEMA_VERSION = 6  # vod-probe's own numbering: 6 = adds probe.subtitle_languages/probe.subtitle
 
 FFPROBE_BIN = "ffprobe"
 DEFAULT_TIMEOUT_SECONDS = 25
@@ -152,7 +152,6 @@ def probe_stream(url, timeout_seconds=DEFAULT_TIMEOUT_SECONDS):
     streams = data.get("streams", [])
     video_streams = [s for s in streams if s.get("codec_type") == "video"]
     audio_streams = [s for s in streams if s.get("codec_type") == "audio"]
-    subtitle_streams = [s for s in streams if s.get("codec_type") == "subtitle"]
 
     if not video_streams:
         return {"ok": False, "error": "no video stream found", "raw": data}
@@ -168,10 +167,6 @@ def probe_stream(url, timeout_seconds=DEFAULT_TIMEOUT_SECONDS):
         audio_languages.append(lang)
         if _looks_like_audio_description(a):
             ad_languages.append(lang)
-
-    subtitle_languages = [
-        (s.get("tags") or {}).get("language", "und") for s in subtitle_streams
-    ]
 
     duration = None
     fmt = data.get("format") or {}
@@ -192,7 +187,6 @@ def probe_stream(url, timeout_seconds=DEFAULT_TIMEOUT_SECONDS):
         "hdr_type": classify_hdr(video),
         "audio_languages": audio_languages,
         "audio_description_languages": ad_languages,
-        "subtitle_languages": subtitle_languages,
         "duration_secs": duration,
         "summary": summarize_probe(data),
     }

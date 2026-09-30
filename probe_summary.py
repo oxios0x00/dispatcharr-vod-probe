@@ -18,6 +18,7 @@ _VIDEO_KEYS = (
     "display_aspect_ratio", "bit_rate",
 )
 _AUDIO_KEYS = ("codec_name", "profile", "channels", "channel_layout", "sample_rate", "bit_rate")
+_SUBTITLE_KEYS = ("codec_name",)
 _FORMAT_KEYS = ("format_name", "duration", "bit_rate", "size")
 # Only the flags that change how a track should be read are worth keeping.
 _DISPOSITION_FLAGS = ("default", "forced", "hearing_impaired", "visual_impaired", "comment", "original")
@@ -61,30 +62,30 @@ def _audio_summary(stream):
     return out
 
 
+def _subtitle_summary(stream):
+    out = _pick(stream, _SUBTITLE_KEYS)
+    tags = stream.get("tags") or {}
+    if tags.get("language"):
+        out["language"] = tags["language"]
+    if tags.get("title"):
+        out["title"] = tags["title"]
+    flags = _flags(stream)
+    if flags:
+        out["flags"] = flags
+    return out
+
+
 def summarize_probe(data):
     """Compact dict built from a parsed `ffprobe -show_format -show_streams`
     JSON document."""
     data = data or {}
     streams = data.get("streams") or []
-    subtitle_codecs = {}
-    subtitle_flags = {}
-    for stream in streams:
-        if stream.get("codec_type") != "subtitle":
-            continue
-        codec = stream.get("codec_name") or "unknown"
-        subtitle_codecs[codec] = subtitle_codecs.get(codec, 0) + 1
-        for flag in _flags(stream):
-            if flag in ("forced", "hearing_impaired"):
-                subtitle_flags[flag] = subtitle_flags.get(flag, 0) + 1
-
-    summary = {
+    return {
         "format": _pick(data.get("format") or {}, _FORMAT_KEYS),
         "video": [_video_summary(s) for s in streams if s.get("codec_type") == "video"],
         "audio": [_audio_summary(s) for s in streams if s.get("codec_type") == "audio"],
+        "subtitle": [_subtitle_summary(s) for s in streams if s.get("codec_type") == "subtitle"],
     }
-    if subtitle_codecs:
-        summary["subtitles"] = {"codecs": subtitle_codecs, **subtitle_flags}
-    return summary
 
 
 def dumps_compact(summary):

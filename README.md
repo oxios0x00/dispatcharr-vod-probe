@@ -7,7 +7,7 @@
 
 **Measure the real quality of your VOD catalogue once, and let every tool read it.**
 
-VOD Probe is a [Dispatcharr](https://github.com/Dispatcharr/Dispatcharr) plugin. It runs `ffprobe` against the movies and episodes Dispatcharr imported from your Xtream Codes providers, and writes the result into each relation's `custom_properties`. Anything that reads Dispatcharr's API (a media-server companion, another plugin, a script) can then use the real resolution, HDR type, codec and audio languages instead of guessing from a category name.
+VOD Probe is a [Dispatcharr](https://github.com/Dispatcharr/Dispatcharr) plugin. It runs `ffprobe` against the movies and episodes Dispatcharr imported from your Xtream Codes providers, and writes the result into each relation's `custom_properties`. Anything that reads Dispatcharr's API (a media-server companion, another plugin, a script) can then use the real resolution, HDR type, codec, audio and subtitle languages instead of guessing from a category name.
 
 It does not write `.strm` files. Besides measuring quality, it can optionally backfill a missing `tmdb_id`/`imdb_id` from your provider (see [Missing tmdb_id/imdb_id](#missing-tmdb_idimdb_id)); that is the one case where it merges two catalogue rows and deletes the one left empty, and only that case — everything else only adds information.
 
@@ -30,7 +30,7 @@ For every probed relation, `quality` and `resolution` are set, using the vocabul
     "quality": "4K",
     "resolution": "3840x2160",
     "probe": {
-      "schema_version": 5,
+      "schema_version": 6,
       "status": "ok",
       "probed_at": "2026-09-21T14:26:21Z",
       "tier": "2160p",
@@ -42,6 +42,11 @@ For every probed relation, `quality` and `resolution` are set, using the vocabul
         { "codec": "eac3", "channels": 6, "language": "eng" },
         { "codec": "eac3", "channels": 6, "language": "ger" },
         { "codec": "eac3", "channels": 6, "language": "fre" }
+      ],
+      "subtitle_languages": ["eng", "fre"],
+      "subtitle": [
+        { "codec": "subrip", "language": "eng" },
+        { "codec": "subrip", "language": "fre", "forced": true }
       ],
       "duration_secs": 6776.0,
       "container": "matroska,webm",
@@ -66,6 +71,8 @@ A relation that was never probed simply has no `probe` block, and `quality_info`
 | `bit_rate` | Bitrate of the whole file (video and audio), in bits/s. |
 | `audio_languages` | The languages present, de-duplicated: the field to filter on. |
 | `audio` | Every audio track: codec, channels, language, and `audio_description: true` when it is an audio-description track. |
+| `subtitle_languages` | The subtitle languages present, de-duplicated. |
+| `subtitle` | Every subtitle track: codec, language, and `forced: true` / `hearing_impaired: true` when the file flags it as such. |
 | `duration_secs`, `container` | Duration and container format. |
 | `source` | Which plugin and version wrote the block. |
 
@@ -79,7 +86,7 @@ Each series relation (one version of a series) also carries its own `custom_prop
 
 ```json
 "probe": {
-  "schema_version": 5,
+  "schema_version": 6,
   "status": "ok",
   "probed_at": "2026-09-21T14:30:02Z",
   "last_modified": "1789592978",
@@ -108,7 +115,7 @@ Each series relation (one version of a series) also carries its own `custom_prop
 If you build on this data, these are the rules:
 
 - **A relation has a usable result** when `probe.status` is `ok` or `inferred` and `probe.tier` is set. `error` and `unreachable` mean the probe was tried and failed. No `probe` block means the relation has not been handled yet. A series is fully answered when its summary's `status` is `ok`. `partial` and `error` are real answers too — sampled, some or none usable — not "still working on it"; only `pending` means that.
-- **Documented fields keep their name and meaning** as long as `schema_version` does not change. It is currently **5**.
+- **Documented fields keep their name and meaning** as long as `schema_version` does not change. It is currently **6**.
 - **Fields may be added without a version change**, so ignore the ones you do not know. The same goes for a new value of an existing field that only narrows a state already treated as "not answered" — `error` (1.0.2) and `partial` (1.0.3) for a series summary's `status` are ones: a consumer already treating anything but `ok` as "not ready" needs no change to stay correct, and can start treating them as a definitive answer whenever it does.
 - **A rename, a removal or a change of meaning raises `schema_version`.** Treat a block whose version you do not know as not measured.
 - **Not part of the contract:** the text of `error`, `attempts`, `retry`, `reload` and `source`. They are informational and may change.
@@ -141,7 +148,7 @@ A lookup that does not end in an id written to the real field leaves a small mar
   "status": "not_found",
   "looked_up_at": "2026-09-28T17:09:24Z",
   "attempts": 1,
-  "source": { "plugin": "vod-probe", "version": "1.1.0" }
+  "source": { "plugin": "vod-probe", "version": "1.2.0" }
 }
 ```
 
@@ -321,7 +328,7 @@ If a run fails after a Dispatcharr update, look at these first.
 
 ## Status
 
-Version 1.1.0. In daily use since 2026-09-21 on a Dispatcharr 0.31.0 instance that serves a Jellyfin library, with one Xtream Codes provider and a catalogue of about 600 movies, 900 series and 22,000 episodes. That covers a full first pass on movies and series, writes to the catalogue, disabling and re-enabling groups, failed probes and retries, Dispatcharr's own scheduled refreshes, and the plugin's scheduled runs with the retry switch on. Also running since 2026-09-25 on a second, real production instance with about 1500 movies and 1500 series, without issue. Fetch Missing IDs verified live on that second instance after a second provider was added: 987/990 movies missing an id recovered one, 110 via a real merge. General probing itself is not tested with several providers, or with a concurrency above 1.
+Version 1.2.0. In daily use since 2026-09-21 on a Dispatcharr 0.31.0 instance that serves a Jellyfin library, with one Xtream Codes provider and a catalogue of about 600 movies, 900 series and 22,000 episodes. That covers a full first pass on movies and series, writes to the catalogue, disabling and re-enabling groups, failed probes and retries, Dispatcharr's own scheduled refreshes, and the plugin's scheduled runs with the retry switch on. Also running since 2026-09-25 on a second, real production instance with about 1500 movies and 1500 series, without issue. Fetch Missing IDs verified live on that second instance after a second provider was added: 987/990 movies missing an id recovered one, 110 via a real merge. General probing itself is not tested with several providers, or with a concurrency above 1.
 
 ## Development
 
