@@ -57,7 +57,7 @@ def test_summary_keeps_the_details_worth_having_later():
                                    "dv_level": 6, "rpu_present_flag": 1}]
     assert s["audio"][0] == {"codec_name": "eac3", "channels": 6, "channel_layout": "5.1(side)",
                              "sample_rate": "48000", "language": "eng", "title": "Dolby Atmos",
-                             "flags": ["default"]}
+                             "flags": ["default"], "bps_tag": "10012704"}
     assert "title" not in s["audio"][1]
     assert len(s["subtitle"]) == 30
     assert s["subtitle"][0] == {"codec_name": "subrip", "language": "eng", "flags": ["forced"]}

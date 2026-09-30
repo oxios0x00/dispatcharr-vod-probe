@@ -23,7 +23,7 @@ except ImportError:  # imported as a top-level module by the unit tests
 # NOTES.md point 12: discovered when video_bitrate was added and existing
 # cached rows kept showing bitrate=None for files that genuinely had a
 # usable BPS tag, because they were probed before that extraction existed.
-PROBE_SCHEMA_VERSION = 6  # vod-probe's own numbering: 6 = adds probe.subtitle_languages/probe.subtitle
+PROBE_SCHEMA_VERSION = 7  # vod-probe's own numbering: 7 = adds probe.audio[].bit_rate and probe.size
 
 FFPROBE_BIN = "ffprobe"
 DEFAULT_TIMEOUT_SECONDS = 25

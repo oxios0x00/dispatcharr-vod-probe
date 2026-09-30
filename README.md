@@ -30,18 +30,19 @@ For every probed relation, `quality` and `resolution` are set, using the vocabul
     "quality": "4K",
     "resolution": "3840x2160",
     "probe": {
-      "schema_version": 6,
+      "schema_version": 7,
       "status": "ok",
       "probed_at": "2026-09-21T14:26:21Z",
       "tier": "2160p",
       "hdr": "hdr10",
       "video": { "codec": "hevc", "profile": "Main 10", "bit_depth": 10, "bit_rate": 13954901, "frame_rate": 24.0 },
       "bit_rate": 17034152,
+      "size": 2568945112,
       "audio_languages": ["eng", "ger", "fre"],
       "audio": [
-        { "codec": "eac3", "channels": 6, "language": "eng" },
-        { "codec": "eac3", "channels": 6, "language": "ger" },
-        { "codec": "eac3", "channels": 6, "language": "fre" }
+        { "codec": "eac3", "channels": 6, "language": "eng", "bit_rate": 768000 },
+        { "codec": "eac3", "channels": 6, "language": "ger", "bit_rate": 768000 },
+        { "codec": "eac3", "channels": 6, "language": "fre", "bit_rate": 768000 }
       ],
       "subtitle_languages": ["eng", "fre"],
       "subtitle": [
@@ -69,12 +70,15 @@ A relation that was never probed simply has no `probe` block, and `quality_info`
 | `hdr` | `sdr`, `hdr10`, `hlg` or `dolby_vision`. |
 | `video` | Codec, profile, bit depth, video bitrate (bits/s) and frame rate, when the file reports them. |
 | `bit_rate` | Bitrate of the whole file (video and audio), in bits/s. |
-| `audio_languages` | The languages present, de-duplicated: the field to filter on. |
-| `audio` | Every audio track: codec, channels, language, and `audio_description: true` when it is an audio-description track. |
-| `subtitle_languages` | The subtitle languages present, de-duplicated. |
+| `size` | Size of the whole file, in bytes. |
+| `audio_languages` | The languages present, de-duplicated: the field to filter on. ISO 639-2 (`eng`, `fre`, `und`...), see below. |
+| `audio` | Every audio track: codec, channels, language, bitrate (bits/s, when the file reports it) and `audio_description: true` when it is an audio-description track. |
+| `subtitle_languages` | The subtitle languages present, de-duplicated. Same ISO 639-2 codes as `audio_languages`. |
 | `subtitle` | Every subtitle track: codec, language, and `forced: true` / `hearing_impaired: true` when the file flags it as such. |
-| `duration_secs`, `container` | Duration and container format. |
+| `duration_secs`, `container` | Duration and container format. `duration_secs` is present only on a measured block (`ok`): an `inferred` copy never has one, since a duration belongs to one file. |
 | `source` | Which plugin and version wrote the block. |
+
+A `language` value is whatever the file's own container tag says (Matroska/MP4 both mandate ISO 639-2 there, `und` for untagged), copied as-is: no conversion, no validation against a known list. Trusting the file's own tag rather than reinterpreting it matches the rest of the plugin (see [Limitations](#limitations), "the provider's own technical fields are not used"), and it means the value is already in the format Kodi-compatible NFOs (Emby, Jellyfin) expect for a track's language, with nothing to convert downstream.
 
 `quality` maps the tier to `4K`, `1080p`, `720p`, `480p` or `SD`. A failed probe never overwrites the last known `quality` and `resolution`.
 
@@ -86,7 +90,7 @@ Each series relation (one version of a series) also carries its own `custom_prop
 
 ```json
 "probe": {
-  "schema_version": 6,
+  "schema_version": 7,
   "status": "ok",
   "probed_at": "2026-09-21T14:30:02Z",
   "last_modified": "1789592978",
@@ -115,7 +119,7 @@ Each series relation (one version of a series) also carries its own `custom_prop
 If you build on this data, these are the rules:
 
 - **A relation has a usable result** when `probe.status` is `ok` or `inferred` and `probe.tier` is set. `error` and `unreachable` mean the probe was tried and failed. No `probe` block means the relation has not been handled yet. A series is fully answered when its summary's `status` is `ok`. `partial` and `error` are real answers too — sampled, some or none usable — not "still working on it"; only `pending` means that.
-- **Documented fields keep their name and meaning** as long as `schema_version` does not change. It is currently **6**.
+- **Documented fields keep their name and meaning** as long as `schema_version` does not change. It is currently **7**.
 - **Fields may be added without a version change**, so ignore the ones you do not know. The same goes for a new value of an existing field that only narrows a state already treated as "not answered" — `error` (1.0.2) and `partial` (1.0.3) for a series summary's `status` are ones: a consumer already treating anything but `ok` as "not ready" needs no change to stay correct, and can start treating them as a definitive answer whenever it does.
 - **A rename, a removal or a change of meaning raises `schema_version`.** Treat a block whose version you do not know as not measured.
 - **Not part of the contract:** the text of `error`, `attempts`, `retry`, `reload` and `source`. They are informational and may change.
@@ -148,7 +152,7 @@ A lookup that does not end in an id written to the real field leaves a small mar
   "status": "not_found",
   "looked_up_at": "2026-09-28T17:09:24Z",
   "attempts": 1,
-  "source": { "plugin": "vod-probe", "version": "1.2.0" }
+  "source": { "plugin": "vod-probe", "version": "1.3.0" }
 }
 ```
 
@@ -308,6 +312,7 @@ Each probe is a real stream connection, and each series version costs one metada
 - **Xtream Codes accounts only**, like Dispatcharr's own VOD support.
 - **A file replaced by the provider under the same id is not detected.** Nothing cheap can tell that a file changed; only probing it again would.
 - **Episodes are sampled by default.** "One per series version" assumes the files of a version are alike, and a series whose seasons differ in quality is caught only with "One per season" or "Every episode". Copies are always marked `inferred`.
+- **Most episodes have no duration from this plugin.** A duration is only measured on the episodes actually probed, and an `inferred` copy deliberately carries none rather than another episode's value. The plugin also writes `duration_secs` only inside the `probe` block, never into Dispatcharr's own episode `duration_secs` field. An episode's duration therefore comes from the provider's metadata alone, and a consumer that needs one (an NFO's `<durationinseconds>`, for instance) must leave it out when it is unknown. Only "Every episode individually" measures them all, at the cost of one probe per episode.
 - **The provider's own technical fields are not used.** For episodes, some providers send video, audio and bitrate data with the episode list. VOD Probe does not read it: it measures the stream itself.
 - **Detecting a new episode relies on `last_modified`.** It is the provider's own timestamp on each series, and whether a provider bumps it when an episode is added depends on that provider.
 - **The UI shows less than the API.** From reading Dispatcharr's front-end code, its interface uses `quality_info` only in the label of each source of a movie, and its "Technical Details" panel reads the provider's own data, not the plugin's. Cards and lists show no quality.
@@ -328,7 +333,7 @@ If a run fails after a Dispatcharr update, look at these first.
 
 ## Status
 
-Version 1.2.0. In daily use since 2026-09-21 on a Dispatcharr 0.31.0 instance that serves a Jellyfin library, with one Xtream Codes provider and a catalogue of about 600 movies, 900 series and 22,000 episodes. That covers a full first pass on movies and series, writes to the catalogue, disabling and re-enabling groups, failed probes and retries, Dispatcharr's own scheduled refreshes, and the plugin's scheduled runs with the retry switch on. Also running since 2026-09-25 on a second, real production instance with about 1500 movies and 1500 series, without issue. Fetch Missing IDs verified live on that second instance after a second provider was added: 987/990 movies missing an id recovered one, 110 via a real merge. General probing itself is not tested with several providers, or with a concurrency above 1.
+Version 1.3.0. In daily use since 2026-09-21 on a Dispatcharr 0.31.0 instance that serves a Jellyfin library, with a catalogue of about 700 movies, 1000 series and 22,000+ episodes. That covers a full first pass on movies and series, writes to the catalogue, disabling and re-enabling groups, failed probes and retries, Dispatcharr's own scheduled refreshes, and the plugin's scheduled runs with the retry switch on. Also running since 2026-09-25 on a second, real production instance with about 1500 movies and 1500 series, without issue. A second Xtream Codes provider was added to the first instance since: confirmed working with two providers probed in the same run, `max_concurrent_probes` above 1, and new-episode detection on real still-airing series. Fetch Missing IDs verified live after that second provider was added: 987/990 movies missing an id recovered one, 110 via a real merge.
 
 ## Development
 

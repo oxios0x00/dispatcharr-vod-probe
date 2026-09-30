@@ -109,6 +109,28 @@ def _container_bit_rate(summary):
         return None
 
 
+def _file_size(summary):
+    try:
+        return int((summary.get("format") or {}).get("size")) or None
+    except (TypeError, ValueError):
+        return None
+
+
+def _track_bit_rate(stream):
+    """A track's own bitrate, in bits per second. Same fallback as the video
+    stream (see NOTES.md point 12): ffprobe's `bit_rate` is often empty for
+    Matroska audio tracks too, where mkvmerge writes the real value in the
+    `BPS` tag instead."""
+    for key in ("bit_rate", "bps_tag"):
+        value = stream.get(key)
+        if value:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
 def _audio_tracks(summary):
     tracks = []
     for stream in summary.get("audio") or []:
@@ -120,6 +142,7 @@ def _audio_tracks(summary):
             "codec": stream.get("codec_name"),
             "channels": stream.get("channels"),
             "language": stream.get("language", "und"),
+            "bit_rate": _track_bit_rate(stream),
         }
         if description:
             track["audio_description"] = True
@@ -177,6 +200,7 @@ def build_probe_block(result, now):
         "duration_secs": result.get("duration_secs"),
         "container": (summary.get("format") or {}).get("format_name"),
         "bit_rate": _container_bit_rate(summary),
+        "size": _file_size(summary),
         "source": {"plugin": PLUGIN_SOURCE, "version": PLUGIN_VERSION},
     }
     return {k: v for k, v in block.items() if v is not None}

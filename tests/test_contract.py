@@ -18,11 +18,11 @@ RESULT = {
     "video_codec": "hevc", "video_bitrate": 18_000_000, "hdr_type": "dolby_vision",
     "duration_secs": 7200.5,
     "summary": {
-        "format": {"format_name": "matroska,webm", "bit_rate": "19762136"},
+        "format": {"format_name": "matroska,webm", "bit_rate": "19762136", "size": "2322869759"},
         "video": [{"profile": "Main 10", "pix_fmt": "yuv420p10le", "avg_frame_rate": "24000/1001"}],
         "audio": [
-            {"codec_name": "eac3", "channels": 6, "language": "fre"},
-            {"codec_name": "aac", "channels": 2, "language": "fre", "flags": ["visual_impaired"]},
+            {"codec_name": "eac3", "channels": 6, "language": "fre", "bit_rate": "640000"},
+            {"codec_name": "aac", "channels": 2, "language": "fre", "flags": ["visual_impaired"], "bps_tag": "128500"},
         ],
         "subtitle": [
             {"codec_name": "subrip", "language": "fre"},
@@ -50,12 +50,15 @@ def test_probe_block_details():
     }
     assert "audio_description" not in block["audio"][0]
     assert block["audio"][1]["audio_description"] is True
+    assert block["audio"][0]["bit_rate"] == 640_000  # native ffprobe field
+    assert block["audio"][1]["bit_rate"] == 128_500  # fallback to the mkvmerge BPS tag
     assert block["audio_languages"] == ["fre"]
     assert "forced" not in block["subtitle"][0]
     assert block["subtitle"][1]["forced"] is True
     assert block["subtitle_languages"] == ["fre", "eng"]
     assert block["container"] == "matroska,webm"
     assert block["bit_rate"] == 19_762_136
+    assert block["size"] == 2_322_869_759
 
 
 def test_merge_success_keeps_other_keys():

@@ -21,11 +21,11 @@ RESULT = {
     "ok": True, "width": 3840, "height": 2160, "quality_label": "2160p", "video_codec": "hevc",
     "video_bitrate": 13_954_901, "hdr_type": "hdr10", "duration_secs": 6776.0,
     "summary": {
-        "format": {"format_name": "matroska,webm", "bit_rate": "17034152"},
+        "format": {"format_name": "matroska,webm", "bit_rate": "17034152", "size": "2568945112"},
         "video": [{"profile": "Main 10", "pix_fmt": "yuv420p10le", "avg_frame_rate": "24/1"}],
         "audio": [
-            {"codec_name": "eac3", "channels": 6, "language": "eng"},
-            {"codec_name": "eac3", "channels": 6, "language": "fre"},
+            {"codec_name": "eac3", "channels": 6, "language": "eng", "bit_rate": "768000"},
+            {"codec_name": "eac3", "channels": 6, "language": "fre", "bps_tag": "768000"},
             {"codec_name": "aac", "channels": 2, "language": "fre", "flags": ["visual_impaired"]},
         ],
         "subtitle": [

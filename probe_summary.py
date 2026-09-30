@@ -56,6 +56,9 @@ def _audio_summary(stream):
         out["language"] = tags["language"]
     if tags.get("title"):
         out["title"] = tags["title"]
+    bps = tags.get("BPS")
+    if bps:
+        out["bps_tag"] = bps
     flags = _flags(stream)
     if flags:
         out["flags"] = flags
