@@ -122,6 +122,7 @@ If you build on this data, these are the rules:
 - **Documented fields keep their name and meaning** as long as `schema_version` does not change. It is currently **7**.
 - **Fields may be added without a version change**, so ignore the ones you do not know. The same goes for a new value of an existing field that only narrows a state already treated as "not answered" — `error` (1.0.2) and `partial` (1.0.3) for a series summary's `status` are ones: a consumer already treating anything but `ok` as "not ready" needs no change to stay correct, and can start treating them as a definitive answer whenever it does.
 - **A rename, a removal or a change of meaning raises `schema_version`.** Treat a block whose version you do not know as not measured.
+- **Schema history.** 7: adds `audio[].bit_rate` and `size`. 6: adds `subtitle_languages` and `subtitle`. 5: the original block (video, compact audio, `duration_secs`, `container`). Every bump makes the next run probe everything again.
 - **Not part of the contract:** the text of `error`, `attempts`, `retry`, `reload` and `source`. They are informational and may change.
 - **`quality`** (next to `probe`) uses Dispatcharr's own vocabulary, so `quality_info` keeps working.
 - **Data can be missing for a while.** When Dispatcharr reloads a series, it erases what was written on its episodes until the next run (see [below](#dispatcharr-can-erase-what-was-written-on-episodes)). A consumer should treat a missing block as "not measured yet", not as an error.
@@ -218,11 +219,11 @@ Probe Run is a Celery task on Dispatcharr's `dvr` queue, not part of the web req
 
 To upgrade, import the new ZIP the same way and accept to replace the installed plugin, then restart Dispatcharr. Dispatcharr replaces the whole plugin folder, which is why the plugin's data lives next to it: the settings, the schedule, the probe results (in the catalogue) and `vod_probe_data` are all kept. Up to 0.10.0 that state lived in `vod_probe/data/`, inside the plugin folder: upgrading from such a version by importing the ZIP loses it once (**Run Status** starts empty, a pause is lifted); the plugin moves it to `vod_probe_data` the first time it starts.
 
-To uninstall, click **[SCHEDULE] Remove** first (otherwise Celery keeps a nightly task for a plugin that is gone), delete the plugin in Dispatcharr, then the `vod_probe_data` folder, which Dispatcharr does not know about. What the plugin wrote into the catalogue stays there.
+To uninstall, click **[SCHEDULE] Remove** first (otherwise Celery keeps a nightly task for a plugin that is gone), delete the plugin in Dispatcharr, then the `vod_probe_data` folder, which Dispatcharr does not know about. What the plugin wrote into the catalogue stays there, and a merge made by Fetch Missing IDs cannot be undone: the row it absorbed is deleted.
 
 ## Quick start
 
-Keep **Dry run** on for the first step.
+Keep **Dry run** on for the first step. It also applies to **Fetch Missing IDs**: a dry run only reports the ids it would write and the rows it would merge.
 
 1. **Scan** counts what is due: movies to probe, and series versions to handle with the reason for each. Nothing is written.
 2. **Probe Run** with Dry run on. It goes through everything due and probes for real, but writes nothing and loads no episode lists: Dispatcharr's log shows, for each relation, what it would write. Click **Pause** once you have seen enough, or put a few ids in *Only these movie relation ids* to try only those.
@@ -312,7 +313,7 @@ Each probe is a real stream connection, and each series version costs one metada
 - **Xtream Codes accounts only**, like Dispatcharr's own VOD support.
 - **A file replaced by the provider under the same id is not detected.** Nothing cheap can tell that a file changed; only probing it again would.
 - **Episodes are sampled by default.** "One per series version" assumes the files of a version are alike, and a series whose seasons differ in quality is caught only with "One per season" or "Every episode". Copies are always marked `inferred`.
-- **Most episodes have no duration from this plugin.** A duration is only measured on the episodes actually probed, and an `inferred` copy deliberately carries none rather than another episode's value. The plugin also writes `duration_secs` only inside the `probe` block, never into Dispatcharr's own episode `duration_secs` field. An episode's duration therefore comes from the provider's metadata alone, and a consumer that needs one (an NFO's `<durationinseconds>`, for instance) must leave it out when it is unknown. Only "Every episode individually" measures them all, at the cost of one probe per episode.
+- **Most episodes have no duration.** `duration_secs` is measured only on the episodes actually probed, and an `inferred` copy deliberately carries none rather than another episode's value. With the default setting that is one episode per series version, so a catalogue of about 1000 series versions has about 1000 episode durations out of 22,000+. A consumer that needs one (an NFO's `<durationinseconds>`, for instance) must leave it out when it is unknown. Only "Every episode individually" measures them all, at the cost of one probe per episode. The plugin never writes `duration_secs` into Dispatcharr's own episode field, only inside the `probe` block.
 - **The provider's own technical fields are not used.** For episodes, some providers send video, audio and bitrate data with the episode list. VOD Probe does not read it: it measures the stream itself.
 - **Detecting a new episode relies on `last_modified`.** It is the provider's own timestamp on each series, and whether a provider bumps it when an episode is added depends on that provider.
 - **The UI shows less than the API.** From reading Dispatcharr's front-end code, its interface uses `quality_info` only in the label of each source of a movie, and its "Technical Details" panel reads the provider's own data, not the plugin's. Cards and lists show no quality.
@@ -326,7 +327,8 @@ The plugin relies on parts of Dispatcharr that are not a public API, so an updat
 
 - the models `M3UMovieRelation`, `M3USeriesRelation`, `M3UEpisodeRelation` and `M3UVODCategoryRelation` (`apps.vod.models`), including the fields `custom_properties`, `last_episode_refresh` and `series_relation`;
 - `refresh_series_episodes` (`apps.vod.tasks`), the function that loads a series' episodes;
-- the Xtream client (`core.xtream_codes`), `SystemNotification` and `CoreSettings.get_system_time_zone()` (`core.models`);
+- `merge_movie_data` and `merge_series_data` (`apps.vod.tasks`), which Fetch Missing IDs calls to merge two catalogue rows, and the `Movie`, `Series` and `Episode` fields it reads and writes (`tmdb_id`, `imdb_id`, `Episode.series`);
+- the Xtream client (`core.xtream_codes`, including `get_vod_info` and `get_series_info`), `SystemNotification` and `CoreSettings.get_system_time_zone()` (`core.models`);
 - `django-celery-beat` and the `dvr` Celery queue.
 
 If a run fails after a Dispatcharr update, look at these first.

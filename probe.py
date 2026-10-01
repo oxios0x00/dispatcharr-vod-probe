@@ -1,7 +1,6 @@
 """Technical stream probing via ffprobe.
 
-Validated empirically against a real Dispatcharr instance (see NOTES.md
-point 1): pointing ffprobe directly at the Dispatcharr-served stream URL
+Validated empirically against a real Dispatcharr instance: pointing ffprobe directly at the Dispatcharr-served stream URL
 lets ffmpeg's own HTTP client issue the Range requests and seeks it needs
 (including following Dispatcharr's redirect chain to the real provider,
 and locating a trailing `moov` atom on non-faststart MP4s) — a few MB read
@@ -17,12 +16,12 @@ except ImportError:  # imported as a top-level module by the unit tests
     from probe_summary import summarize_probe
 
 # Bump whenever probe_stream()'s output shape changes in a way that
-# affects selection (new field, changed extraction logic) — a cached
-# probe row saved under an older version is treated as stale and
-# re-probed, rather than silently reused with a missing/wrong field. See
-# NOTES.md point 12: discovered when video_bitrate was added and existing
-# cached rows kept showing bitrate=None for files that genuinely had a
-# usable BPS tag, because they were probed before that extraction existed.
+# affects selection (new field, changed extraction logic) — a probe block
+# written under an older version is treated as stale and re-probed, rather
+# than silently reused with a missing/wrong field. Discovered when
+# video_bitrate was added and existing blocks kept showing no bitrate for
+# files that genuinely had a usable BPS tag, because they were probed
+# before that extraction existed.
 PROBE_SCHEMA_VERSION = 7  # vod-probe's own numbering: 7 = adds probe.audio[].bit_rate and probe.size
 
 FFPROBE_BIN = "ffprobe"
@@ -31,8 +30,7 @@ DEFAULT_PROBESIZE = 20_000_000       # bytes
 DEFAULT_ANALYZEDURATION = 20_000_000  # microseconds
 
 # Best-effort substrings for audio-description detection via a track's
-# free-text title tag. This is a heuristic, not a guarantee — see
-# NOTES.md point 6. The disposition.visual_impaired flag (checked
+# free-text title tag. This is a heuristic, not a guarantee. The disposition.visual_impaired flag (checked
 # separately) is the more trustworthy of the two signals when present.
 _AD_TITLE_HINTS = (
     "audiodescription",
@@ -90,7 +88,7 @@ def _extract_video_bitrate(video_stream):
     """ffprobe's standard `bit_rate` field is populated for many MP4s but
     is often empty for Matroska, where the real value only shows up in the
     mkvmerge-written `BPS` tag instead (verified empirically against real
-    files of both formats — see NOTES.md point 12). Try both, in that
+    files of both formats). Try both, in that
     order; return None if neither is present rather than guessing."""
     bit_rate = video_stream.get("bit_rate")
     if bit_rate:

@@ -118,7 +118,7 @@ def _file_size(summary):
 
 def _track_bit_rate(stream):
     """A track's own bitrate, in bits per second. Same fallback as the video
-    stream (see NOTES.md point 12): ffprobe's `bit_rate` is often empty for
+    stream: ffprobe's `bit_rate` is often empty for
     Matroska audio tracks too, where mkvmerge writes the real value in the
     `BPS` tag instead."""
     for key in ("bit_rate", "bps_tag"):
