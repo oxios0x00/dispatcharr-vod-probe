@@ -225,7 +225,9 @@ class Plugin:
     # Dispatcharr has no scheduling API for plugins: the plugin registers its
     # own django-celery-beat PeriodicTask, which queues the same
     # Celery task as the Probe Run button. The settings are copied when Apply is
-    # clicked, so changing a setting afterwards needs Apply again. A scheduled
+    # clicked, but only as a fallback: a scheduled run re-reads the live settings
+    # when it starts (see _live_settings), so changing one needs no new Apply.
+    # Apply is only needed for the cron expression itself. A scheduled
     # run, like any run, handles everything due, and never a fixed list of ids:
     # it is the small daily run that picks up what is new.
 
@@ -233,6 +235,17 @@ class Plugin:
         snapshot = {k: v for k, v in (settings or {}).items() if not k.startswith("schedule_")}
         snapshot.update(only_relation_ids="", only_series_relation_ids="")
         return snapshot
+
+    def _live_settings(self):
+        """The plugin's settings as saved now, or None if they cannot be read."""
+        try:
+            from apps.plugins.models import PluginConfig
+
+            key = os.path.basename(os.path.dirname(os.path.abspath(__file__)))
+            config = PluginConfig.objects.filter(key=key).first()
+        except Exception:
+            return None
+        return dict(config.settings or {}) if config else None
 
     def _apply_schedule(self, settings):
         cron_expr = (settings.get("schedule_cron") or "").strip()
@@ -436,6 +449,14 @@ class Plugin:
         self.state.set("lock_owner", "Probe Run")
         try:
             if scheduled:
+                # The settings queued with the task were copied at the last Apply
+                # and may be stale: the saved ones win, the copy is the fallback.
+                live = self._live_settings()
+                if live is not None:
+                    settings = self._schedule_snapshot({**settings, **live})
+                    logger.info("Scheduled run: using the settings saved now.")
+                else:
+                    logger.warning("Scheduled run: saved settings unreadable, using the copy from the last Apply.")
                 self._apply_retry_switch(settings, logger)
             return self._run_pass(settings, logger)
         finally:
@@ -857,11 +878,9 @@ class Plugin:
         turning it on needs no new Apply, and it turns itself off once used. A
         dry run changes nothing, so it leaves the switch on."""
         from apps.plugins.loader import PluginManager
-        from apps.plugins.models import PluginConfig
 
         key = os.path.basename(os.path.dirname(os.path.abspath(__file__)))
-        config = PluginConfig.objects.filter(key=key).first()
-        live = dict(config.settings or {}) if config else {}
+        live = self._live_settings() or {}
         if not live.get("retry_errors_next_schedule"):
             return
         if settings.get("dry_run", True):

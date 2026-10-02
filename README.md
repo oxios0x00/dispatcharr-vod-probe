@@ -267,7 +267,7 @@ Keep **Dry run** on for the first step. It also applies to **Fetch Missing IDs**
 Dispatcharr has no scheduling API for plugins, so VOD Probe registers a `django-celery-beat` periodic task, the same way other plugins do.
 
 - Set **Schedule** to a cron expression (`0 4 * * *` is every day at 04:00), then click **[SCHEDULE] Apply**. The time is read in the time zone set in Dispatcharr's System Settings, like Dispatcharr's own schedules; notification titles show the time in the same zone. An empty schedule means no schedule: Apply then removes any existing one.
-- The settings are **copied when you click Apply**, so click it again after changing one. The exceptions are the retry switch, which is read live when the run starts, and the id lists, which a scheduled run ignores: like any run, it handles everything due.
+- A scheduled run **reads the saved settings when it starts**, so changing a setting needs no new Apply; click Apply again only after changing the cron expression. The settings copied at Apply are just a fallback if the live ones cannot be read. The id lists are ignored by a scheduled run: like any run, it handles everything due.
 
 ## Good to know
 
