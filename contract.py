@@ -31,6 +31,10 @@ ID_STATUS_ERROR = "error"
 RELOAD_TOLERANCE = timedelta(seconds=2)
 # How many times a series loaded with no episode is asked for again before it is left alone.
 MAX_EMPTY_RELOADS = 3
+# How many passes a series may stay "pending" because the MAX_SAMPLE_TRIES cap left episodes
+# untried and every one tried so far failed. After that it is settled as "error"/"partial"
+# (Retry Errors tries again), instead of walking through a long series three episodes at a time.
+MAX_SAMPLE_PASSES = 3
 
 # probe.tier -> the vocabulary Dispatcharr's own quality_info uses, so any
 # client that already reads quality_info needs no change.
@@ -319,7 +323,7 @@ def merge_inferred(existing, source_properties, source_relation_id, now):
     return merged
 
 
-def series_status(episodes, answered, total, exhausted):
+def series_status(episodes, answered, total, exhausted, attempts=0):
     """The series summary's status once a pass over it is done.
 
     `answered`/`total`: how many independent samples came back usable, out of
@@ -327,7 +331,9 @@ def series_status(episodes, answered, total, exhausted):
     episode" mode, or the one series-wide sample otherwise. `exhausted`: True
     when nothing is left untried among the ones that did not answer (the
     MAX_SAMPLE_TRIES cap can leave some of a season's episodes untried, in
-    which case it is not).
+    which case it is not). `attempts`: how many passes this series has had,
+    this one included; from MAX_SAMPLE_PASSES on, episodes still untried no
+    longer keep it "pending".
 
     "ok" needs every sample to answer. Short of that: "pending" while
     something up there is still untried, so a next pass (or Retry Errors) can
@@ -340,7 +346,7 @@ def series_status(episodes, answered, total, exhausted):
         return "pending"
     if total > 0 and answered == total:
         return STATUS_OK
-    if not exhausted:
+    if not exhausted and attempts < MAX_SAMPLE_PASSES:
         return "pending"
     return STATUS_ERROR if answered == 0 else STATUS_PARTIAL
 

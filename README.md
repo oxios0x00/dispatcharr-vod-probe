@@ -105,7 +105,7 @@ Each series relation (one version of a series) also carries its own `custom_prop
 | Field | Meaning |
 | --- | --- |
 | `schema_version` | Format version, as for a relation. |
-| `status` | `ok`: **every episode has an answer**, measured or inferred. `partial`: some do, and the rest are confirmed dead — settled, nothing more will happen without **Retry Errors**. `error`: none do — every one it could try failed, settled too. `pending`: genuinely not sampled yet, or (in `first_of_season`) a season the sample cap has not finished trying — this one keeps going on its own, no Retry Errors needed. A series with no summary has not been handled yet. |
+| `status` | `ok`: **every episode has an answer**, measured or inferred. `partial`: some do, and the rest are confirmed dead — settled, nothing more will happen without **Retry Errors**. `error`: none do — every one it could try failed, settled too. `pending`: genuinely not sampled yet, or (in `first_of_season`) a season the sample cap has not finished trying — this one keeps going on its own, no Retry Errors needed. That only lasts three passes: a series whose samples keep failing settles on `error` (or `partial`) after the third. A series with no summary has not been handled yet. |
 | `probed_at` | When the summary was written (UTC). |
 | `last_modified` | The provider's own "last modified" value for the series at that time. |
 | `episodes`, `seasons` | How many the plugin saw. |
@@ -277,7 +277,7 @@ A failed probe is never retried on its own, so a dead link is not probed again e
 
 A relation whose probe fails keeps its last known `quality` and `resolution`; only `probe.status`, the short error and an attempt counter change.
 
-The same is true of a series version once it has fully sampled and is left with nothing more to try: its summary settles on `status: "error"` (nothing worked) or `"partial"` (some seasons did, one or more are confirmed dead) and is left alone, exactly like a failed movie — **Retry Errors** flags it (and its failed episodes) for the next run too. If the provider is still down, it settles back where it was, not `pending`. A season with more episodes than the sample cap tries a few more each pass on its own, without Retry Errors — a `pending` summary means real work is still left, not a settled answer.
+The same is true of a series version once it has fully sampled and is left with nothing more to try: its summary settles on `status: "error"` (nothing worked) or `"partial"` (some seasons did, one or more are confirmed dead) and is left alone, exactly like a failed movie — **Retry Errors** flags it (and its failed episodes) for the next run too. If the provider is still down, it settles back where it was, not `pending`. A season with more episodes than the sample cap tries a few more each pass on its own, without Retry Errors — a `pending` summary means real work is still left, not a settled answer. The cap on passes is three (`MAX_SAMPLE_PASSES`): after that, episodes still untried no longer keep a series pending.
 
 ### Incomplete episode lists
 

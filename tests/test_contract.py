@@ -209,6 +209,11 @@ def test_series_status():
     assert series_status(episodes=20, answered=0, total=1, exhausted=True) == "error"
     assert series_status(episodes=85, answered=5, total=6, exhausted=True) == "partial"
     assert series_status(episodes=85, answered=5, total=6, exhausted=False) == "pending"  # a 6th season still to try
+    # a series whose samples keep failing is settled after MAX_SAMPLE_PASSES passes, not walked three episodes at a time
+    assert series_status(episodes=30, answered=0, total=1, exhausted=False, attempts=2) == "pending"
+    assert series_status(episodes=30, answered=0, total=1, exhausted=False, attempts=3) == "error"
+    assert series_status(episodes=85, answered=5, total=6, exhausted=False, attempts=3) == "partial"
+    assert series_status(episodes=20, answered=1, total=1, exhausted=False, attempts=9) == "ok"
 
 
 def test_series_marker_records_the_given_status():

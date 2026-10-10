@@ -692,7 +692,9 @@ class Plugin:
             else:
                 total, sample_count = len(groups), answered
                 complete_sample = first_sample
-            status = series_status(len(rows), sample_count, total, exhausted)
+            previous_marker = (relation.custom_properties or {}).get("probe")
+            passes = int((previous_marker or {}).get("attempts") or 0) + 1 if isinstance(previous_marker, dict) else 1
+            status = series_status(len(rows), sample_count, total, exhausted, passes)
             self._write(
                 series_model, series_relation_id,
                 # The current time, not the start of the pass: the summary must be newer than
